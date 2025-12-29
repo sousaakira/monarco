@@ -20,18 +20,18 @@
       </div>
       
       <!-- Menus do Sistema -->
-      <nav class="menubar">
+      <nav class="menubar" @mouseleave="handleMenubarLeave">
         <div 
           v-for="menu in menus" 
           :key="menu.id"
           class="menu-item"
           :class="{ active: activeMenu === menu.id }"
+          @mouseenter="handleMenuHover(menu.id)"
         >
           <span 
             class="menu-label"
             :data-menu="menu.id"
             @mousedown.prevent="toggleMenu(menu.id)"
-            @mouseenter="handleMenuHover(menu.id)"
           >{{ menu.label }}</span>
         </div>
       </nav>
@@ -81,6 +81,8 @@
       :key="menu.id"
       class="menu-dropdown"
       :style="dropdownStyle"
+      @mouseenter="cancelCloseTimeout"
+      @mouseleave="scheduleClose"
     >
       <template v-for="item in menu.items" :key="item.id">
         <div v-if="item.type === 'separator'" class="menu-separator"></div>
@@ -121,7 +123,7 @@ const emit = defineEmits([
 
 const activeMenu = ref(null)
 const dropdownStyle = ref({})
-let menubarElement = null
+let closeTimeout = null
 
 // Definição dos menus
 const menus = [
@@ -217,7 +219,8 @@ function updateDropdownPosition(menuId) {
 
 function handleMenuHover(menuId) {
   // Se já existe um menu aberto, troca para o novo imediatamente
-  if (activeMenu.value && activeMenu.value !== menuId) {
+  if (activeMenu.value) {
+    cancelCloseTimeout()
     activeMenu.value = menuId
     updateDropdownPosition(menuId)
   }
@@ -225,6 +228,25 @@ function handleMenuHover(menuId) {
 
 function closeMenu() {
   activeMenu.value = null
+}
+
+function handleMenubarLeave() {
+  // Fecha com delay para permitir entrar no dropdown
+  scheduleClose()
+}
+
+function scheduleClose() {
+  cancelCloseTimeout()
+  closeTimeout = setTimeout(() => {
+    closeMenu()
+  }, 300)
+}
+
+function cancelCloseTimeout() {
+  if (closeTimeout) {
+    clearTimeout(closeTimeout)
+    closeTimeout = null
+  }
 }
 
 function executeMenuItem(item) {
@@ -357,7 +379,10 @@ onUnmounted(() => {
 
 .menu-overlay {
   position: fixed;
-  inset: 0;
+  top: 36px; /* começa abaixo da titlebar */
+  left: 0;
+  right: 0;
+  bottom: 0;
   z-index: 10000;
 }
 </style>
