@@ -1,0 +1,165 @@
+/* icons.css */
+
+.ra {
+  display: inline-block;
+  width: 1em;
+  height: 1em;
+  background-size: contain;
+  background-repeat: no-repeat;
+}
+
+.ra-js {
+  background-image: url('./icons/file_type_js.svg');
+}
+.ra-c {
+  background-image: url('./icons/file_type_c.svg');
+}
+.ra-json {
+  background-image: url('./icons/file_type_json.svg');
+}
+.ra-vuejs {
+  background-image: url('./icons/file_type_vue.svg');
+}
+.ra-log {
+  background-image: url('./icons/file_type_log.svg');
+}
+.ra-sega {
+  background-image: url('./icons/sega.svg');
+}
+.ra-gitignore {
+  background-image: url('./icons/file_type_git.svg');
+}
+.ra-h {
+  background-image: url('./icons/file_type_cheader.svg');
+}
+.ra-html {
+  background-image: url('./icons/file_type_html.svg');
+}
+.ra-image {
+  background-image: url('./icons/file_type_image.svg');
+}
+.ra-png {
+  background-image: url('./icons/file_type_pnpm.svg');
+}
+.ra-gnu {
+  background-image: url('./icons/file_type_gnu.svg');
+}
+
+/* Font Awesome Icons */
+.icon-floppy-disk,
+.icon-gear,
+.icon-folder-open,
+.icon-file-plus,
+.icon-folder-plus,
+.icon-pen-to-square,
+.icon-trash,
+.icon-comment-dots,
+.icon-window-minimize,
+.icon-window-maximize,
+.icon-window-restore,
+.icon-xmark {
+  display: inline-block;
+  width: 16px;
+  height: 16px;
+  background-size: contain;
+  background-repeat: no-repeat;
+  filter: invert(1);
+}
+
+.icon-floppy-disk,
+.icon-gear,
+.icon-folder-open,
+.icon-file-plus,
+.icon-folder-plus,
+.icon-pen-to-square,
+.icon-trash,
+.icon-comment-dots {
+  width: 16px;
+  height: 16px;
+}
+
+.icon-window-minimize,
+.icon-window-maximize,
+.icon-window-restore,
+.icon-xmark {
+  width: 14px;
+  height: 14px;
+}
+
+.icon-floppy-disk {
+  background-image: url('./fonts/solid/floppy-disk.svg');
+}
+
+.icon-gear {
+  background-image: url('./fonts/solid/gear.svg');
+}
+
+.icon-folder-open {
+  background-image: url('./fonts/solid/folder-open.svg');
+}
+
+.icon-file-plus {
+  background-image: url('./fonts/solid/file-circle-plus.svg');
+}
+
+.icon-folder-plus {
+  background-image: url('./fonts/solid/folder-plus.svg');
+}
+
+.icon-pen-to-square {
+  background-image: url('./fonts/solid/pen-to-square.svg');
+}
+
+.icon-trash {
+  background-image: url('./fonts/solid/trash.svg');
+}
+
+.icon-comment-dots {
+  background-image: url('./fonts/solid/comment-dots.svg');
+}
+
+.icon-window-minimize {
+  background-image: url('./fonts/solid/window-minimize.svg');
+}
+
+.icon-window-maximize {
+  background-image: url('./fonts/solid/window-maximize.svg');
+}
+
+.icon-window-restore {
+  background-image: url('./fonts/solid/window-restore.svg');
+}
+
+.icon-xmark {
+  background-image: url('./fonts/solid/xmark.svg');
+}
+
+.icon-terminal {
+  display: inline-block;
+  width: 16px;
+  height: 16px;
+  background-size: contain;
+  background-repeat: no-repeat;
+  filter: invert(1);
+  background-image: url('./fonts/solid/terminal.svg');
+}
+
+.icon-plus {
+  display: inline-block;
+  width: 16px;
+  height: 16px;
+  background-size: contain;
+  background-repeat: no-repeat;
+  filter: invert(1);
+  background-image: url('./fonts/solid/plus.svg');
+}
+
+.icon-palette {
+  display: inline-block;
+  width: 14px;
+  height: 14px;
+  background-size: contain;
+  background-repeat: no-repeat;
+  filter: invert(1);
+  background-image: url('./fonts/solid/palette.svg');
+}

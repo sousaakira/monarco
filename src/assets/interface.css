@@ -1,0 +1,150 @@
+.painel-bar{
+  padding: 0 0 0 0 !important;
+  background-color: #1e1e1e;
+  border: 1px solid #333;
+  border-radius: 5px;
+  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+  margin-bottom: 1px;
+}
+
+.panel-top {
+  align-self: flex-start !important;
+}
+
+.painel ul{
+  list-style-type: none;
+  padding: 0 0 0 1% !important;
+}
+
+.painel ul li {
+  display: inline-block;
+  margin-right: 10px;
+  padding: 0 0 0 1% !important;
+}
+
+.painel ul li:hover {
+  color: rgb(132, 133, 127);
+  cursor: pointer;
+}
+
+.painel ul li.right-align {
+  float: right;
+  margin-right: 0;
+  margin-right: 10px;
+}
+
+.tools ul li:hover{
+  color: aqua;
+}
+
+.play-icon:hover {
+  color: rgb(132, 133, 127);
+}
+
+.danger{
+  color: darkred;
+}
+
+.container-project {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.icon {
+  margin-right: 10px;
+}
+
+.open {
+  cursor: pointer;
+}
+
+.open:hover {
+  color: #333;
+}
+
+/* tabs interfaces controllers */
+
+.tabs {
+  display: flex;
+  cursor: pointer;
+  align-self: flex-start;
+}
+
+.tab {
+  cursor: pointer;
+  padding: 4px;
+  margin-right: 1px;
+  border-bottom: none;
+  background-color: #252323;
+}
+
+.tab span {
+  color: rgb(170, 147, 15);
+}
+
+.tab.active {
+  background-color: #302d2d70;
+}
+
+.tab-close-btn{
+  text-align: center;
+  padding: 2px;
+  font-size: small;
+  color: #686868;
+  cursor: pointer;
+  background-color: transparent;
+  border: none;
+}
+.tab-close-btn:hover {
+  background-color: rgba(78, 75, 75, 0.439);
+  border-radius: 3px;
+  color: #f1f1f1;
+}
+.tab-close-btn i {
+  margin-right: 4px;
+  margin-left: 4px;
+  /* Espaçamento entre o ícone e o texto */
+}
+.tab-close-btn:active {
+  transform: translateY(1px);
+  /* Adiciona um leve efeito de clique */
+}
+
+.btn-back {
+  text-align: left;
+  /* padding: 2px; */
+  font-size: larger;
+  /* color: #686868; */
+  cursor: pointer;
+  background-color: transparent;
+  border: none;
+  margin-right: 4px;
+  /* margin-left: 4px; */
+}
+
+.row {
+  display: flex;
+  /* Torna os filhos elementos flexíveis (em linha) */
+}
+
+.btn-back {
+  margin-right: 1px;
+  /* Adiciona algum espaço entre os botões, ajuste conforme necessário */
+}
+
+.btn-back i {
+  margin-right: 4px;
+  margin-left: 4px;
+  /* Espaçamento entre o ícone e o texto */
+}
+
+.file-path{
+  cursor: pointer;
+  margin: 4px;
+  max-height: 100px;
+  overflow-y: auto;
+}
+.file-path:hover {
+  border: solid 1px #222121;
+}
