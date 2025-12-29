@@ -20,36 +20,19 @@
       </div>
       
       <!-- Menus do Sistema -->
-      <nav class="menubar" @mouseleave="handleMenubarLeave">
+      <nav class="menubar">
         <div 
           v-for="menu in menus" 
           :key="menu.id"
           class="menu-item"
           :class="{ active: activeMenu === menu.id }"
-          @click="toggleMenu(menu.id)"
-          @mouseenter="handleMenuHover(menu.id)"
         >
-          <span class="menu-label">{{ menu.label }}</span>
-          
-          <!-- Dropdown -->
-          <div 
-            v-if="activeMenu === menu.id" 
-            class="menu-dropdown"
-            @mouseenter="cancelCloseTimeout"
-          >
-            <template v-for="item in menu.items" :key="item.id">
-              <div v-if="item.type === 'separator'" class="menu-separator"></div>
-              <button 
-                v-else
-                class="menu-dropdown-item"
-                :disabled="item.disabled"
-                @click.stop="executeMenuItem(item)"
-              >
-                <span class="menu-dropdown-label">{{ item.label }}</span>
-                <span v-if="item.shortcut" class="menu-dropdown-shortcut">{{ item.shortcut }}</span>
-              </button>
-            </template>
-          </div>
+          <span 
+            class="menu-label"
+            :data-menu="menu.id"
+            @mousedown.prevent="toggleMenu(menu.id)"
+            @mouseenter="handleMenuHover(menu.id)"
+          >{{ menu.label }}</span>
         </div>
       </nav>
     </div>
@@ -88,12 +71,35 @@
     </div>
   </div>
   
-  <!-- Overlay para fechar menu ao clicar fora -->
-  <div v-if="activeMenu" class="menu-overlay" @click="closeMenu"></div>
+  <!-- Dropdowns dos Menus (renderizados separadamente) -->
+  <Teleport to="body">
+    <div v-if="activeMenu" class="menu-overlay" @mousedown="closeMenu"></div>
+    
+    <div 
+      v-for="menu in menus" 
+      v-show="activeMenu === menu.id"
+      :key="menu.id"
+      class="menu-dropdown"
+      :style="dropdownStyle"
+    >
+      <template v-for="item in menu.items" :key="item.id">
+        <div v-if="item.type === 'separator'" class="menu-separator"></div>
+        <button 
+          v-else
+          class="menu-dropdown-item"
+          :disabled="item.disabled"
+          @mousedown.prevent="executeMenuItem(item)"
+        >
+          <span class="menu-dropdown-label">{{ item.label }}</span>
+          <span v-if="item.shortcut" class="menu-dropdown-shortcut">{{ item.shortcut }}</span>
+        </button>
+      </template>
+    </div>
+  </Teleport>
 </template>
 
 <script setup>
-import { ref, onMounted, onUnmounted } from 'vue'
+import { ref, onMounted, onUnmounted, nextTick } from 'vue'
 
 defineProps({
   title: String,
@@ -114,7 +120,8 @@ const emit = defineEmits([
 ])
 
 const activeMenu = ref(null)
-let closeTimeout = null
+const dropdownStyle = ref({})
+let menubarElement = null
 
 // Definição dos menus
 const menus = [
@@ -186,38 +193,37 @@ const menus = [
 
 function toggleMenu(menuId) {
   if (activeMenu.value === menuId) {
-    closeMenu()
+    activeMenu.value = null
   } else {
     activeMenu.value = menuId
+    updateDropdownPosition(menuId)
   }
+}
+
+function updateDropdownPosition(menuId) {
+  // Aguarda o próximo tick para calcular posição
+  nextTick(() => {
+    const menuElement = document.querySelector(`.menu-item:has([data-menu="${menuId}"])`)
+    if (!menuElement) return
+    
+    const rect = menuElement.getBoundingClientRect()
+    dropdownStyle.value = {
+      position: 'fixed',
+      top: `${rect.bottom}px`,
+      left: `${rect.left}px`
+    }
+  })
 }
 
 function handleMenuHover(menuId) {
   // Se já existe um menu aberto, troca para o novo imediatamente
   if (activeMenu.value && activeMenu.value !== menuId) {
-    cancelCloseTimeout()
     activeMenu.value = menuId
-  }
-}
-
-function handleMenubarLeave() {
-  // Quando sai da menubar, fecha com delay para permitir entrar no dropdown
-  if (activeMenu.value) {
-    closeTimeout = setTimeout(() => {
-      closeMenu()
-    }, 150)
-  }
-}
-
-function cancelCloseTimeout() {
-  if (closeTimeout) {
-    clearTimeout(closeTimeout)
-    closeTimeout = null
+    updateDropdownPosition(menuId)
   }
 }
 
 function closeMenu() {
-  cancelCloseTimeout()
   activeMenu.value = null
 }
 
@@ -299,16 +305,14 @@ onUnmounted(() => {
 }
 
 .menu-dropdown {
-  position: absolute;
-  top: 100%;
-  left: 0;
+  position: fixed;
   min-width: 220px;
   background: var(--panel);
   border: 1px solid var(--border);
   border-radius: 6px;
   padding: 4px 0;
   box-shadow: 0 4px 16px rgba(0, 0, 0, 0.3);
-  z-index: 1000;
+  z-index: 10001;
 }
 
 .menu-dropdown-item {
@@ -354,6 +358,6 @@ onUnmounted(() => {
 .menu-overlay {
   position: fixed;
   inset: 0;
-  z-index: 999;
+  z-index: 10000;
 }
 </style>
