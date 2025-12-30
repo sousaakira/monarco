@@ -13,7 +13,22 @@ contextBridge.exposeInMainWorld('monarco', {
   createFolder: (parentDirPath, name) => ipcRenderer.invoke('fs:createFolder', parentDirPath, name),
   renamePath: (oldPath, newName) => ipcRenderer.invoke('fs:renamePath', oldPath, newName),
   deletePath: (targetPath) => ipcRenderer.invoke('fs:deletePath', targetPath),
+  searchFiles: (query, options) => ipcRenderer.invoke('fs:search', query, options),
   searchWorkspace: (query) => ipcRenderer.invoke('workspace:search', query),
+  
+  // Git APIs
+  git: {
+    isRepository: () => ipcRenderer.invoke('git:isRepository'),
+    status: () => ipcRenderer.invoke('git:status'),
+    currentBranch: () => ipcRenderer.invoke('git:currentBranch'),
+    stage: (filePath) => ipcRenderer.invoke('git:stage', filePath),
+    unstage: (filePath) => ipcRenderer.invoke('git:unstage', filePath),
+    discard: (filePath) => ipcRenderer.invoke('git:discard', filePath),
+    commit: (message) => ipcRenderer.invoke('git:commit', message),
+    init: () => ipcRenderer.invoke('git:init'),
+    config: (key, value) => ipcRenderer.invoke('git:config', key, value),
+    getConfig: (key) => ipcRenderer.invoke('git:getConfig', key)
+  },
   
   // Workspace Recent APIs
   workspace: {

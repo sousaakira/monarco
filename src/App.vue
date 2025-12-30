@@ -4,6 +4,7 @@ import MonacoEditor from 'monaco-editor-vue3'
 import FileTree from './components/FileTree.vue'
 import AIChat from './components/AIChat.vue'
 import TitleBar from './components/TitleBar.vue'
+import ActivityBar from './components/ActivityBar.vue'
 import Settings from './components/Settings.vue'
 import ConfirmDialog from './components/ConfirmDialog.vue'
 import CrudDialog from './components/CrudDialog.vue'
@@ -48,6 +49,22 @@ const maxAIChatWidth = 800
 
 // AI Chat state
 const isAIChatOpen = ref(false)
+
+// Active view state
+const activeView = ref('explorer')
+
+// Search state
+const searchQuery = ref('')
+const searchResults = ref([])
+const isSearching = ref(false)
+const searchInContent = ref(false)
+
+// Git state
+const isGitRepo = ref(false)
+const gitStatus = ref([])
+const gitBranch = ref('')
+const gitCommitMessage = ref('')
+const isLoadingGit = ref(false)
 
 // Terminal state
 const isTerminalOpen = ref(false)
@@ -179,9 +196,9 @@ function fitTerminal() {
 // Grid template columns computed
 const gridTemplateColumns = computed(() => {
   if (isAIChatOpen.value) {
-    return `${sidebarWidth.value}px 4px 1fr 4px ${aiChatWidth.value}px`
+    return `36px ${sidebarWidth.value}px 4px 1fr 4px ${aiChatWidth.value}px`
   }
-  return `${sidebarWidth.value}px 4px 1fr`
+  return `36px ${sidebarWidth.value}px 4px 1fr`
 })
 
 // Color Palette state
@@ -886,6 +903,167 @@ async function openFile(filePath) {
   }
 }
 
+// Abre arquivo Git (caminho relativo ao workspace)
+function openGitFile(relativePath) {
+  if (!workspacePath.value) return
+  
+  // Constrói o caminho absoluto
+  const separator = workspacePath.value.includes('\\') ? '\\' : '/'
+  const fullPath = workspacePath.value + separator + relativePath
+  
+  openFile(fullPath)
+}
+
+// Search in workspace
+async function performSearch() {
+  if (!searchQuery.value.trim()) {
+    searchResults.value = []
+    return
+  }
+
+  isSearching.value = true
+  try {
+    const results = await window.monarco.searchFiles(searchQuery.value, {
+      searchContent: searchInContent.value,
+      maxResults: 100
+    })
+    searchResults.value = results
+  } catch (e) {
+    console.error('Search failed', e)
+    lastError.value = e.message
+  } finally {
+    isSearching.value = false
+  }
+}
+
+function openSearchResult(result) {
+  if (result.type === 'directory') return
+  openFile(result.fullPath)
+}
+
+// Git functions
+async function loadGitStatus() {
+  if (!workspacePath.value) return
+  
+  isLoadingGit.value = true
+  try {
+    isGitRepo.value = await window.monarco.git.isRepository()
+    
+    if (isGitRepo.value) {
+      const [status, branch] = await Promise.all([
+        window.monarco.git.status(),
+        window.monarco.git.currentBranch()
+      ])
+      gitStatus.value = status
+      gitBranch.value = branch
+    }
+  } catch (e) {
+    console.error('Failed to load git status', e)
+  } finally {
+    isLoadingGit.value = false
+  }
+}
+
+async function gitStageFile(filePath) {
+  try {
+    await window.monarco.git.stage(filePath)
+    await loadGitStatus()
+  } catch (e) {
+    console.error('Failed to stage file', e)
+    lastError.value = e.message
+  }
+}
+
+async function gitUnstageFile(filePath) {
+  try {
+    await window.monarco.git.unstage(filePath)
+    await loadGitStatus()
+  } catch (e) {
+    console.error('Failed to unstage file', e)
+    lastError.value = e.message
+  }
+}
+
+async function gitDiscardFile(filePath) {
+  if (!confirm(`Discard changes in ${filePath}?`)) return
+  
+  try {
+    await window.monarco.git.discard(filePath)
+    await loadGitStatus()
+    await refreshTree()
+  } catch (e) {
+    console.error('Failed to discard file', e)
+    lastError.value = e.message
+  }
+}
+
+async function gitCommit() {
+  if (!gitCommitMessage.value.trim()) {
+    alert('Por favor, insira uma mensagem de commit')
+    return
+  }
+  
+  try {
+    await window.monarco.git.commit(gitCommitMessage.value)
+    gitCommitMessage.value = ''
+    await loadGitStatus()
+  } catch (e) {
+    console.error('Failed to commit', e)
+    
+    // Verifica se o erro é de configuração Git
+    if (e.message.includes('não está configurado') || e.message.includes('user.name') || e.message.includes('user.email')) {
+      const userName = prompt('Configure o Git:\n\nDigite seu nome:')
+      if (!userName) return
+      
+      const userEmail = prompt('Digite seu email:')
+      if (!userEmail) return
+      
+      try {
+        await window.monarco.git.config('user.name', userName)
+        await window.monarco.git.config('user.email', userEmail)
+        
+        // Tenta commit novamente
+        await window.monarco.git.commit(gitCommitMessage.value)
+        gitCommitMessage.value = ''
+        await loadGitStatus()
+        alert('Git configurado e commit realizado com sucesso!')
+      } catch (configError) {
+        console.error('Failed to configure git', configError)
+        lastError.value = configError.message
+        alert('Erro ao configurar Git: ' + configError.message)
+      }
+    } else {
+      lastError.value = e.message
+      alert('Erro ao fazer commit: ' + e.message)
+    }
+  }
+}
+
+async function gitInitRepo() {
+  try {
+    await window.monarco.git.init()
+    await loadGitStatus()
+  } catch (e) {
+    console.error('Failed to init git', e)
+    lastError.value = e.message
+  }
+}
+
+const stagedFiles = computed(() => gitStatus.value.filter(f => f.staged))
+const unstagedFiles = computed(() => gitStatus.value.filter(f => f.unstaged && !f.staged))
+
+function getGitStatusIcon(status) {
+  switch (status) {
+    case 'modified': return 'M'
+    case 'added': return 'A'
+    case 'deleted': return 'D'
+    case 'renamed': return 'R'
+    case 'untracked': return 'U'
+    case 'conflict': return 'C'
+    default: return '?'
+  }
+}
+
 function removeTab(filePath) {
   const idx = tabs.value.findIndex((t) => t.path === filePath)
   if (idx === -1) return
@@ -1181,48 +1359,262 @@ onUnmounted(() => {
       @discard="resolveCloseDecision('discard')"
     />
 
+    <!-- Activity Bar -->
+    <ActivityBar
+      :active-view="activeView"
+      @select="activeView = $event; if ($event === 'git') loadGitStatus()"
+      @settings="openSettings"
+    />
+
     <aside class="sidebar">
-      <div class="sidebarHeader">
-        <button @click="pickWorkspace" title="Open folder">
-          <span class="icon-folder-open"></span>
-        </button>
-        <button :disabled="!workspacePath" @click="createNewFile" title="New File">
-          <span class="icon-file-plus"></span>
-        </button>
-        <button :disabled="!workspacePath" @click="createNewFolder" title="New Folder">
-          <span class="icon-folder-plus"></span>
-        </button>
-        <button :disabled="!selectedNode || selectedNode.path === workspacePath" @click="renameSelected" title="Rename">
-          <span class="icon-pen-to-square"></span>
-        </button>
-        <button :disabled="!selectedNode || selectedNode.path === workspacePath" @click="deleteSelected" title="Delete">
-          <span class="icon-trash"></span>
-        </button>
-        <button @click="openAIChat" title="IA Chat">
-          <span class="icon-comment-dots"></span>
-        </button>
-        <button @click="toggleTerminal" title="Terminal (Ctrl+`)">
-          <span class="icon-terminal"></span>
-        </button>
-        <div class="path">{{ workspacePath ?? 'No folder selected' }}</div>
+      <!-- Explorer View -->
+      <div v-show="activeView === 'explorer'" class="sidebar-content">
+        <div class="sidebarHeader">
+          <button @click="pickWorkspace" title="Open folder">
+            <span class="icon-folder-open"></span>
+          </button>
+          <button :disabled="!workspacePath" @click="createNewFile" title="New File">
+            <span class="icon-file-plus"></span>
+          </button>
+          <button :disabled="!workspacePath" @click="createNewFolder" title="New Folder">
+            <span class="icon-folder-plus"></span>
+          </button>
+          <button :disabled="!selectedNode || selectedNode.path === workspacePath" @click="renameSelected" title="Rename">
+            <span class="icon-pen-to-square"></span>
+          </button>
+          <button :disabled="!selectedNode || selectedNode.path === workspacePath" @click="deleteSelected" title="Delete">
+            <span class="icon-trash"></span>
+          </button>
+          <button @click="openAIChat" title="IA Chat">
+            <span class="icon-comment-dots"></span>
+          </button>
+          <button @click="toggleTerminal" title="Terminal (Ctrl+`)">
+            <span class="icon-terminal"></span>
+          </button>
+          <div class="path">{{ workspacePath ?? 'No folder selected' }}</div>
+        </div>
+
+        <div class="tree">
+          <div class="treeArea" @contextmenu.prevent="openTreeContextMenu">
+            <div v-if="!tree" class="emptyState">
+              Select a folder to start.
+            </div>
+            <div v-else>
+              <FileTree
+                :node="tree"
+                :selectedPath="selectedNode?.path ?? null"
+                :expanded-map="expandedMap"
+                @open="openFile"
+                @select="onSelectNode"
+                @toggle="toggleDir"
+                @context="openContextMenu"
+              />
+            </div>
+          </div>
+        </div>
       </div>
 
-      <div class="tree">
-        <div class="treeArea" @contextmenu.prevent="openTreeContextMenu">
-          <div v-if="!tree" class="emptyState">
-            Select a folder to start.
-          </div>
-          <div v-else>
-            <FileTree
-              :node="tree"
-              :selectedPath="selectedNode?.path ?? null"
-              :expanded-map="expandedMap"
-              @open="openFile"
-              @select="onSelectNode"
-              @toggle="toggleDir"
-              @context="openContextMenu"
+      <!-- Search View -->
+      <div v-show="activeView === 'search'" class="sidebar-content">
+        <div class="sidebarHeader">
+          <h3 style="margin: 0; font-size: 13px; font-weight: 600;">SEARCH</h3>
+        </div>
+        <div class="search-panel">
+          <div class="search-input-container">
+            <input 
+              v-model="searchQuery"
+              type="text" 
+              placeholder="Search in workspace..." 
+              class="search-input"
+              @keyup.enter="performSearch"
             />
+            <button 
+              class="search-btn" 
+              title="Search"
+              @click="performSearch"
+              :disabled="!searchQuery.trim() || isSearching"
+            >
+              <span class="icon-magnifying-glass"></span>
+            </button>
           </div>
+          
+          <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 12px; padding: 0 4px;">
+            <label style="display: flex; align-items: center; gap: 4px; cursor: pointer; font-size: 12px;">
+              <input 
+                v-model="searchInContent" 
+                type="checkbox" 
+                style="cursor: pointer;"
+              />
+              <span>Search in file content</span>
+            </label>
+          </div>
+
+          <div v-if="isSearching" class="emptyState" style="padding: 20px; text-align: center;">
+            Searching...
+          </div>
+
+          <div v-else-if="searchResults.length === 0 && searchQuery" class="emptyState" style="padding: 20px; text-align: center;">
+            No results found
+          </div>
+
+          <div v-else-if="searchResults.length > 0" class="search-results">
+            <div class="search-result-header">
+              {{ searchResults.length }} result{{ searchResults.length > 1 ? 's' : '' }}
+            </div>
+            <div 
+              v-for="(result, idx) in searchResults" 
+              :key="idx" 
+              class="search-result-item"
+              @click="openSearchResult(result)"
+            >
+              <div class="search-result-icon">
+                <span v-if="result.type === 'directory'" style="color: var(--accent);">📁</span>
+                <span v-else-if="result.type === 'file'" style="color: var(--text);">📄</span>
+                <span v-else style="color: var(--muted);">📝</span>
+              </div>
+              <div class="search-result-content">
+                <div class="search-result-path">{{ result.path }}</div>
+                <div v-if="result.type === 'match'" class="search-result-match">
+                  <span class="search-result-line">Line {{ result.line }}:</span>
+                  <span class="search-result-text">{{ result.text }}</span>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div v-else class="emptyState" style="padding: 20px; text-align: center;">
+            Type to search in workspace
+          </div>
+        </div>
+      </div>
+
+      <!-- Source Control View -->
+      <div v-show="activeView === 'git'" class="sidebar-content">
+        <div class="sidebarHeader">
+          <h3 style="margin: 0; font-size: 13px; font-weight: 600;">SOURCE CONTROL</h3>
+          <span v-if="gitBranch" style="font-size: 11px; color: var(--muted); margin-left: 8px;">
+            {{ gitBranch }}
+          </span>
+          <button 
+            @click="loadGitStatus" 
+            :disabled="isLoadingGit"
+            title="Refresh Git Status"
+            style="margin-left: auto; padding: 4px 8px; font-size: 11px;"
+          >
+            <span v-if="isLoadingGit">⟳</span>
+            <span v-else>🔄</span>
+            Refresh
+          </button>
+        </div>
+
+        <div v-if="isLoadingGit" class="emptyState" style="padding: 20px; text-align: center;">
+          Loading...
+        </div>
+
+        <div v-else-if="!isGitRepo" class="git-panel">
+          <div class="emptyState" style="padding: 20px; text-align: center;">
+            <p>No git repository found</p>
+            <button @click="gitInitRepo" style="margin-top: 12px;">
+              Initialize Repository
+            </button>
+          </div>
+        </div>
+
+        <div v-else class="git-panel">
+          <!-- Commit Section -->
+          <div class="git-commit-section">
+            <textarea 
+              v-model="gitCommitMessage"
+              placeholder="Commit message..."
+              class="git-commit-input"
+              rows="3"
+            ></textarea>
+            <button 
+              @click="gitCommit"
+              class="git-commit-btn"
+              :disabled="!stagedFiles.length || !gitCommitMessage.trim()"
+            >
+              Commit ({{ stagedFiles.length }})
+            </button>
+          </div>
+
+          <!-- Staged Changes -->
+          <div v-if="stagedFiles.length > 0" class="git-section">
+            <div class="git-section-header">STAGED CHANGES ({{ stagedFiles.length }})</div>
+            <div 
+              v-for="file in stagedFiles" 
+              :key="file.path"
+              class="git-file-item"
+            >
+              <div class="git-file-info" @click="openGitFile(file.path)">
+                <span :class="'git-status-' + file.status">{{ getGitStatusIcon(file.status) }}</span>
+                <span class="git-file-path">{{ file.path }}</span>
+              </div>
+              <button 
+                class="git-file-action"
+                @click="gitUnstageFile(file.path)"
+                title="Unstage"
+              >
+                -
+              </button>
+            </div>
+          </div>
+
+          <!-- Unstaged Changes -->
+          <div v-if="unstagedFiles.length > 0" class="git-section">
+            <div class="git-section-header">CHANGES ({{ unstagedFiles.length }})</div>
+            <div 
+              v-for="file in unstagedFiles" 
+              :key="file.path"
+              class="git-file-item"
+            >
+              <div class="git-file-info" @click="openGitFile(file.path)">
+                <span :class="'git-status-' + file.status">{{ getGitStatusIcon(file.status) }}</span>
+                <span class="git-file-path">{{ file.path }}</span>
+              </div>
+              <div class="git-file-actions">
+                <button 
+                  class="git-file-action"
+                  @click="gitStageFile(file.path)"
+                  title="Stage"
+                >
+                  +
+                </button>
+                <button 
+                  class="git-file-action"
+                  @click="gitDiscardFile(file.path)"
+                  title="Discard"
+                >
+                  ✕
+                </button>
+              </div>
+            </div>
+          </div>
+
+          <!-- No Changes -->
+          <div v-if="gitStatus.length === 0" class="emptyState" style="padding: 20px; text-align: center;">
+            No changes to commit
+          </div>
+        </div>
+      </div>
+
+      <!-- Debug View -->
+      <div v-show="activeView === 'debug'" class="sidebar-content">
+        <div class="sidebarHeader">
+          <h3 style="margin: 0; font-size: 13px; font-weight: 600;">RUN AND DEBUG</h3>
+        </div>
+        <div class="emptyState" style="padding: 20px; text-align: center;">
+          Debug functionality coming soon...
+        </div>
+      </div>
+
+      <!-- Extensions View -->
+      <div v-show="activeView === 'extensions'" class="sidebar-content">
+        <div class="sidebarHeader">
+          <h3 style="margin: 0; font-size: 13px; font-weight: 600;">EXTENSIONS</h3>
+        </div>
+        <div class="emptyState" style="padding: 20px; text-align: center;">
+          Extensions marketplace coming soon...
         </div>
       </div>
     </aside>

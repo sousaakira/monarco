@@ -2,8 +2,12 @@ import { app, BrowserWindow, dialog, ipcMain, screen } from 'electron'
 import path from 'node:path'
 import fs from 'node:fs/promises'
 import os from 'node:os'
+import { exec } from 'node:child_process'
+import { promisify } from 'node:util'
 import pty from 'node-pty'
 import { AIAgent, toolExecutor, toolDefinitions } from './ai/index.js'
+
+const execAsync = promisify(exec)
 
 const isDev = !app.isPackaged
 
@@ -167,6 +171,21 @@ function assertValidName(name) {
     throw new Error('Name must not include path separators')
   }
   return name.trim()
+}
+
+function parseGitStatus(status) {
+  const X = status[0]
+  const Y = status[1]
+  
+  // Status codes: https://git-scm.com/docs/git-status#_short_format
+  if (X === '?' && Y === '?') return 'untracked'
+  if (X === 'A') return 'added'
+  if (X === 'M' || Y === 'M') return 'modified'
+  if (X === 'D' || Y === 'D') return 'deleted'
+  if (X === 'R') return 'renamed'
+  if (X === 'C') return 'copied'
+  if (X === 'U' || Y === 'U') return 'conflict'
+  return 'unknown'
 }
 
 async function buildTree(rootPath) {
@@ -449,6 +468,270 @@ app.whenReady().then(() => {
     } catch (e) {
       console.error('fs:deletePath failed', { targetPath, currentWorkspacePath }, e)
       throw e
+    }
+  })
+
+  // Buscar arquivos no workspace
+  ipcMain.handle('fs:search', async (_evt, query, options = {}) => {
+    try {
+      const workspacePath = assertWorkspaceSelected()
+      const maxResults = options.maxResults || 100
+      const results = []
+      
+      async function searchInDirectory(dirPath, depth = 0) {
+        if (results.length >= maxResults || depth > 10) return
+        
+        try {
+          const entries = await fs.readdir(dirPath, { withFileTypes: true })
+          
+          for (const entry of entries) {
+            if (results.length >= maxResults) break
+            
+            // Ignora diretórios ocultos e node_modules
+            if (entry.name.startsWith('.') || entry.name === 'node_modules') {
+              continue
+            }
+            
+            const fullPath = path.join(dirPath, entry.name)
+            const relativePath = path.relative(workspacePath, fullPath)
+            
+            if (entry.isDirectory()) {
+              // Busca no nome do diretório
+              if (entry.name.toLowerCase().includes(query.toLowerCase())) {
+                results.push({
+                  path: relativePath,
+                  name: entry.name,
+                  type: 'directory',
+                  fullPath
+                })
+              }
+              // Busca recursivamente
+              await searchInDirectory(fullPath, depth + 1)
+            } else if (entry.isFile()) {
+              // Busca no nome do arquivo
+              if (entry.name.toLowerCase().includes(query.toLowerCase())) {
+                results.push({
+                  path: relativePath,
+                  name: entry.name,
+                  type: 'file',
+                  fullPath
+                })
+              }
+              
+              // Busca no conteúdo de arquivos de texto
+              if (options.searchContent && entry.name.match(/\.(js|ts|vue|css|html|json|md|txt)$/i)) {
+                try {
+                  const content = await fs.readFile(fullPath, 'utf8')
+                  const lines = content.split('\n')
+                  
+                  lines.forEach((line, lineNumber) => {
+                    if (results.length >= maxResults) return
+                    
+                    if (line.toLowerCase().includes(query.toLowerCase())) {
+                      results.push({
+                        path: relativePath,
+                        name: entry.name,
+                        type: 'match',
+                        line: lineNumber + 1,
+                        text: line.trim(),
+                        fullPath
+                      })
+                    }
+                  })
+                } catch {
+                  // Ignora erros de leitura (arquivos binários, etc)
+                }
+              }
+            }
+          }
+        } catch (err) {
+          // Ignora erros de permissão
+          console.warn('Error searching directory:', dirPath, err.message)
+        }
+      }
+      
+      await searchInDirectory(workspacePath)
+      
+      return results
+    } catch (e) {
+      console.error('fs:search failed', e)
+      throw e
+    }
+  })
+
+  // ===== Git Handlers =====
+  
+  // Verificar se é um repositório Git
+  ipcMain.handle('git:isRepository', async () => {
+    try {
+      const workspacePath = assertWorkspaceSelected()
+      await execAsync('git rev-parse --git-dir', { cwd: workspacePath })
+      return true
+    } catch {
+      return false
+    }
+  })
+  
+  // Obter status do repositório
+  ipcMain.handle('git:status', async () => {
+    try {
+      const workspacePath = assertWorkspaceSelected()
+      const { stdout } = await execAsync('git status --porcelain', { cwd: workspacePath })
+      
+      console.log('=== GIT STATUS DEBUG ===')
+      console.log('Workspace:', workspacePath)
+      console.log('Raw output:', JSON.stringify(stdout))
+      
+      const files = []
+      const lines = stdout.trim().split('\n').filter(Boolean)
+      
+      for (const line of lines) {
+        const status = line.substring(0, 2)
+        const filePath = line.substring(3)
+        
+        const parsedStatus = parseGitStatus(status)
+        const X = status[0] // Index (staging area)
+        const Y = status[1] // Working tree
+        
+        // X mostra status no index (staged)
+        // Y mostra status no working tree (unstaged)
+        const isStaged = X !== ' ' && X !== '?'
+        const isUnstaged = Y !== ' ' || parsedStatus === 'untracked'
+        
+        console.log(`File: ${filePath}, Status: "${status}", X="${X}", Y="${Y}", staged=${isStaged}, unstaged=${isUnstaged}`)
+        
+        files.push({
+          path: filePath,
+          status: parsedStatus,
+          staged: isStaged,
+          unstaged: isUnstaged
+        })
+      }
+      
+      console.log('Files returned:', JSON.stringify(files))
+      console.log('=== END GIT STATUS DEBUG ===')
+      
+      return files
+    } catch (e) {
+      console.error('git:status failed', e)
+      throw new Error('Failed to get git status')
+    }
+  })
+  
+  // Obter branch atual
+  ipcMain.handle('git:currentBranch', async () => {
+    try {
+      const workspacePath = assertWorkspaceSelected()
+      const { stdout } = await execAsync('git branch --show-current', { cwd: workspacePath })
+      return stdout.trim()
+    } catch (e) {
+      console.error('git:currentBranch failed', e)
+      return 'unknown'
+    }
+  })
+  
+  // Stage arquivo
+  ipcMain.handle('git:stage', async (_evt, filePath) => {
+    try {
+      const workspacePath = assertWorkspaceSelected()
+      await execAsync(`git add "${filePath}"`, { cwd: workspacePath })
+      return true
+    } catch (e) {
+      console.error('git:stage failed', e)
+      throw new Error(`Failed to stage ${filePath}`)
+    }
+  })
+  
+  // Unstage arquivo
+  ipcMain.handle('git:unstage', async (_evt, filePath) => {
+    try {
+      const workspacePath = assertWorkspaceSelected()
+      await execAsync(`git reset HEAD "${filePath}"`, { cwd: workspacePath })
+      return true
+    } catch (e) {
+      console.error('git:unstage failed', e)
+      throw new Error(`Failed to unstage ${filePath}`)
+    }
+  })
+  
+  // Descartar mudanças
+  ipcMain.handle('git:discard', async (_evt, filePath) => {
+    try {
+      const workspacePath = assertWorkspaceSelected()
+      await execAsync(`git checkout -- "${filePath}"`, { cwd: workspacePath })
+      return true
+    } catch (e) {
+      console.error('git:discard failed', e)
+      throw new Error(`Failed to discard changes in ${filePath}`)
+    }
+  })
+  
+  // Commit
+  ipcMain.handle('git:commit', async (_evt, message) => {
+    try {
+      const workspacePath = assertWorkspaceSelected()
+      
+      // Verifica se o Git está configurado
+      try {
+        await execAsync('git config user.name', { cwd: workspacePath })
+        await execAsync('git config user.email', { cwd: workspacePath })
+      } catch (configError) {
+        throw new Error('Git não está configurado. Configure seu nome e email primeiro.')
+      }
+      
+      // Verifica se há arquivos staged usando git status
+      const { stdout: statusOutput } = await execAsync('git status --porcelain', { cwd: workspacePath })
+      const lines = statusOutput.trim().split('\n').filter(Boolean)
+      const hasStagedFiles = lines.some(line => {
+        const X = line[0]
+        return X !== ' ' && X !== '?'
+      })
+      
+      if (!hasStagedFiles) {
+        throw new Error('Nenhum arquivo no stage. Use o botão + para adicionar arquivos antes de commitar.')
+      }
+      
+      const escapedMessage = message.replace(/"/g, '\\"')
+      await execAsync(`git commit -m "${escapedMessage}"`, { cwd: workspacePath })
+      return true
+    } catch (e) {
+      console.error('git:commit failed', e)
+      throw new Error(e.message || 'Falha ao fazer commit')
+    }
+  })
+  
+  // Configurar usuário Git
+  ipcMain.handle('git:config', async (_evt, key, value) => {
+    try {
+      const workspacePath = assertWorkspaceSelected()
+      await execAsync(`git config ${key} "${value}"`, { cwd: workspacePath })
+      return true
+    } catch (e) {
+      console.error('git:config failed', e)
+      throw new Error(`Failed to set git config ${key}`)
+    }
+  })
+  
+  // Obter configuração Git
+  ipcMain.handle('git:getConfig', async (_evt, key) => {
+    try {
+      const workspacePath = assertWorkspaceSelected()
+      const { stdout } = await execAsync(`git config ${key}`, { cwd: workspacePath })
+      return stdout.trim()
+    } catch (e) {
+      return null // Config não existe
+    }
+  })
+  
+  // Inicializar repositório
+  ipcMain.handle('git:init', async () => {
+    try {
+      const workspacePath = assertWorkspaceSelected()
+      await execAsync('git init', { cwd: workspacePath })
+      return true
+    } catch (e) {
+      console.error('git:init failed', e)
+      throw new Error('Failed to initialize git repository')
     }
   })
 
