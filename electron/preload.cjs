@@ -27,7 +27,17 @@ contextBridge.exposeInMainWorld('monarco', {
     commit: (message) => ipcRenderer.invoke('git:commit', message),
     init: () => ipcRenderer.invoke('git:init'),
     config: (key, value) => ipcRenderer.invoke('git:config', key, value),
-    getConfig: (key) => ipcRenderer.invoke('git:getConfig', key)
+    getConfig: (key) => ipcRenderer.invoke('git:getConfig', key),
+    // Novos comandos avançados
+    pull: () => ipcRenderer.invoke('git:pull'),
+    push: () => ipcRenderer.invoke('git:push'),
+    fetch: () => ipcRenderer.invoke('git:fetch'),
+    branches: () => ipcRenderer.invoke('git:branches'),
+    createBranch: (name) => ipcRenderer.invoke('git:createBranch', name),
+    checkout: (name) => ipcRenderer.invoke('git:checkout', name),
+    deleteBranch: (name) => ipcRenderer.invoke('git:deleteBranch', name),
+    log: (options) => ipcRenderer.invoke('git:log', options),
+    diff: (filePath, staged) => ipcRenderer.invoke('git:diff', filePath, staged)
   },
   
   // Workspace Recent APIs
@@ -74,6 +84,10 @@ contextBridge.exposeInMainWorld('monarco', {
     updateSettings: (settings) => ipcRenderer.invoke('ai:updateSettings', settings),
     getTools: () => ipcRenderer.invoke('ai:getTools'),
     executeTool: (toolName, params) => ipcRenderer.invoke('ai:executeTool', toolName, params),
+    // Modos de chat
+    getModes: () => ipcRenderer.invoke('ai:getModes'),
+    setMode: (mode) => ipcRenderer.invoke('ai:setMode', mode),
+    getMode: () => ipcRenderer.invoke('ai:getMode'),
     onToolCall: (callback) => {
       const listener = (_event, toolInfo) => callback(toolInfo)
       ipcRenderer.on('ai:tool-call', listener)

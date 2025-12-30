@@ -13,40 +13,141 @@ const MAX_TOOL_ITERATIONS = 20 // Limite de iterações para evitar loops infini
 const MAX_HISTORY_MESSAGES = 15 // Limite de mensagens no histórico
 const MAX_TOOL_RESULT_LENGTH = 3000 // Limite de caracteres para resultado de tools
 
+// Configurações de contexto por modelo (tokens)
+const MODEL_CONTEXT_LIMITS = {
+  // Modelos pequenos (padrão conservador)
+  'default': { contextWindow: 4096, reserveForResponse: 1024 },
+  // Modelos médios
+  'Qwen/Qwen2.5-Coder-3B-Instruct': { contextWindow: 8192, reserveForResponse: 1024 },
+  'Qwen/Qwen2.5-Coder-7B-Instruct': { contextWindow: 8192, reserveForResponse: 1024 },
+  'Qwen/Qwen2.5-Coder-7B-Instruct-AWQ': { contextWindow: 4096, reserveForResponse: 1024 },
+  // Modelos grandes
+  'gpt-4': { contextWindow: 8192, reserveForResponse: 2048 },
+  'gpt-4-turbo': { contextWindow: 128000, reserveForResponse: 4096 },
+  'gpt-3.5-turbo': { contextWindow: 16385, reserveForResponse: 2048 },
+  'claude-3-opus': { contextWindow: 200000, reserveForResponse: 4096 },
+  'claude-3-sonnet': { contextWindow: 200000, reserveForResponse: 4096 },
+  'claude-3-haiku': { contextWindow: 200000, reserveForResponse: 4096 },
+}
+
+// Definição de modos de chat
+export const CHAT_MODES = {
+  normal: {
+    name: 'Normal',
+    description: 'Chat simples sem ferramentas',
+    tools: [] // Sem tools
+  },
+  gather: {
+    name: 'Gather',
+    description: 'Apenas ferramentas de leitura para explorar o código',
+    tools: [
+      'read_file', 'list_directory', 'search_files', 'grep_code',
+      'get_project_structure', 'get_file_info', 'search_codebase',
+      'git_status', 'git_diff', 'git_log', 'git_branch'
+    ]
+  },
+  agent: {
+    name: 'Agent',
+    description: 'Acesso completo a todas as ferramentas',
+    tools: null // null = todas as tools
+  }
+}
+
 /**
- * Sistema prompt para o agente (compacto para economizar tokens)
+ * Prompts para cada modo de chat
  */
-const SYSTEM_PROMPT = `Você é um assistente de código do Monarco IDE.
+const PROMPTS = {
+  // Modo Agent - Acesso completo
+  agent: `Você é um assistente de código avançado do Monarco IDE com acesso total ao sistema.
+
+PRINCÍPIOS:
+- Seja preciso e eficiente
+- Use ferramentas para explorar o código antes de fazer mudanças
+- Confirme sempre o que vai fazer antes de modificar arquivos
+- Após editar, verifique se há erros
 
 FERRAMENTAS DISPONÍVEIS:
 
-LEITURA:
+**LEITURA:**
 - read_file: Lê arquivo {"path": "caminho"}
 - list_directory: Lista diretório {"path": "caminho"}
 - search_files: Busca arquivos {"pattern": "*.js"}
 - grep_code: Busca texto {"query": "texto"}
 - get_project_structure: Estrutura do projeto {}
 - get_file_info: Info do arquivo {"path": "caminho"}
-
-ESCRITA:
-- write_file: Cria/sobrescreve arquivo {"path": "caminho", "content": "código"}
-- patch_file: Edita arquivo {"path": "caminho", "search": "texto_a_buscar", "replace": "novo_texto"}
-- insert_at_line: Insere em linha {"path": "caminho", "line": 10, "content": "código", "mode": "before"}
-
-BUSCA:
 - search_codebase: Busca inteligente {"query": "termo", "type": "function|class|all"}
 
-REGRAS IMPORTANTES:
-1. Para ver arquivos/código, USE as ferramentas - NUNCA invente conteúdo
-2. Caminhos são SEMPRE relativos ao workspace (ex: "teste.js", "src/App.vue")
-3. NUNCA use caminhos absolutos como "/home/user/..." 
-4. Para patch_file: use texto CURTO e ÚNICO (ex: nome da função)
-5. Para criar código completo, mostre com comentário "// File: caminho/arquivo.js" no início
-6. Para usar ferramenta, responda APENAS:
+**ESCRITA:**
+- write_file: Cria/sobrescreve arquivo {"path": "caminho", "content": "código"}
+- edit_file: Edita com SEARCH/REPLACE (PREFERIDO para edições):
+  {"path": "arquivo", "search_replace_blocks": "<<<<<<< ORIGINAL\ncódigo antigo\n=======\ncódigo novo\n>>>>>>> UPDATED"}
+- patch_file: Edição simples {"path": "caminho", "search": "buscar", "replace": "substituir"}
+
+**TERMINAL:**
+- run_command: Executa comando {"command": "npm install"}
+- open_persistent_terminal: Abre terminal para dev servers {"name": "Dev"}
+- run_persistent_command: Executa em terminal persistente {"terminal_id": "id", "command": "npm run dev"}
+
+**GIT:**
+- git_status, git_diff, git_commit, git_stage, git_log, git_branch
+
+**GERENCIAMENTO:**
+- create_file_or_folder: Cria arquivo/pasta {"path": "pasta/"}
+- delete_file_or_folder: Deleta {"path": "arquivo", "recursive": true}
+- rename_file: Renomeia {"old_path": "antigo", "new_path": "novo"}
+
+REGRAS:
+1. Caminhos são SEMPRE relativos ao workspace (ex: "src/App.vue")
+2. NUNCA use caminhos absolutos
+3. Para editar, use edit_file com blocos SEARCH/REPLACE
+4. Para usar ferramenta, responda APENAS:
 \`\`\`tool
 {"name": "ferramenta", "arguments": {}}
-\`\`\`
-7. Não adicione texto antes/depois do bloco tool`
+\`\`\``,
+
+  // Modo Gather - Apenas leitura
+  gather: `Você é um assistente de análise de código do Monarco IDE.
+
+Você tem acesso APENAS a ferramentas de LEITURA para explorar e entender o código.
+Você NÃO pode modificar arquivos - apenas analisar e explicar.
+
+FERRAMENTAS DISPONÍVEIS:
+- read_file: Lê arquivo {"path": "caminho"}
+- list_directory: Lista diretório {"path": "caminho"}
+- search_files: Busca arquivos {"pattern": "*.js"}
+- grep_code: Busca texto {"query": "texto"}
+- get_project_structure: Estrutura do projeto {}
+- search_codebase: Busca inteligente {"query": "termo"}
+- git_status, git_log, git_diff (apenas leitura)
+
+COMO AJUDAR:
+- Explore o código para responder perguntas
+- Explique a arquitetura e estrutura do projeto
+- Encontre onde funcionalidades estão implementadas
+- Sugira melhorias (sem modificar)
+
+Para usar ferramenta:
+\`\`\`tool
+{"name": "ferramenta", "arguments": {}}
+\`\`\``,
+
+  // Modo Normal - Chat simples
+  normal: `Você é um assistente de programação do Monarco IDE.
+
+Você é um especialista em programação que pode:
+- Responder perguntas sobre código
+- Explicar conceitos de programação
+- Sugerir soluções e melhores práticas
+- Ajudar a debugar lógica
+
+Neste modo você NÃO tem acesso a ferramentas.
+Responda com base no seu conhecimento e no contexto da conversa.
+
+Seja conciso e prático nas respostas.`
+}
+
+// Prompt legado para compatibilidade
+const SYSTEM_PROMPT = PROMPTS.agent
 
 /**
  * Classe do Agente de IA
@@ -63,6 +164,98 @@ export class AIAgent {
     this.conversationHistory = []
     this.onToolCall = null // Callback para notificar frontend sobre tool calls
     this.onChunk = null // Callback para streaming (futuro)
+    this.chatMode = 'agent' // Modo padrão: agent (todas as tools)
+  }
+
+  /**
+   * Define o modo de chat
+   */
+  setMode(mode) {
+    if (CHAT_MODES[mode]) {
+      this.chatMode = mode
+      return { success: true, mode: CHAT_MODES[mode].name }
+    }
+    throw new Error(`Modo inválido: ${mode}. Use: normal, gather, agent`)
+  }
+
+  /**
+   * Retorna o modo atual
+   */
+  getMode() {
+    return {
+      mode: this.chatMode,
+      ...CHAT_MODES[this.chatMode]
+    }
+  }
+
+  /**
+   * Retorna as tools disponíveis para o modo atual
+   */
+  getAvailableTools() {
+    const modeConfig = CHAT_MODES[this.chatMode]
+    if (!modeConfig) return toolDefinitions
+    
+    // null = todas as tools
+    if (modeConfig.tools === null) return toolDefinitions
+    
+    // Array vazio = sem tools
+    if (modeConfig.tools.length === 0) return []
+    
+    // Filtra tools pelo nome
+    return toolDefinitions.filter(t => 
+      modeConfig.tools.includes(t.function.name)
+    )
+  }
+
+  /**
+   * Retorna o system prompt para o modo atual
+   */
+  getSystemPrompt() {
+    return PROMPTS[this.chatMode] || PROMPTS.agent
+  }
+
+  /**
+   * Retorna os limites de contexto para o modelo atual
+   */
+  getContextLimits() {
+    return MODEL_CONTEXT_LIMITS[this.settings.model] || MODEL_CONTEXT_LIMITS['default']
+  }
+
+  /**
+   * Estima o número de tokens em uma string
+   * Usa aproximação: ~4 caracteres = 1 token (conservador)
+   * Pode ser substituído por tiktoken no futuro
+   */
+  estimateTokens(text) {
+    if (!text) return 0
+    // Aproximação: 1 token ~ 4 caracteres para inglês
+    // Para português/código, usamos 3.5 para ser mais conservador
+    return Math.ceil(text.length / 3.5)
+  }
+
+  /**
+   * Estima tokens de uma mensagem (incluindo overhead de formato)
+   */
+  estimateMessageTokens(message) {
+    let tokens = 4 // overhead por mensagem (role, etc)
+    if (message.content) {
+      tokens += this.estimateTokens(message.content)
+    }
+    if (message.tool_calls) {
+      tokens += this.estimateTokens(JSON.stringify(message.tool_calls))
+    }
+    return tokens
+  }
+
+  /**
+   * Calcula tokens totais de um array de mensagens
+   */
+  calculateTotalTokens(messages) {
+    let total = 3 // overhead de início/fim de conversa
+    for (const msg of messages) {
+      total += this.estimateMessageTokens(msg)
+    }
+    return total
   }
 
   /**
@@ -107,7 +300,7 @@ export class AIAgent {
 
       // Monta mensagens para o LLM (usando histórico limitado)
       const messages = [
-        { role: 'system', content: SYSTEM_PROMPT },
+        { role: 'system', content: this.getSystemPrompt() },
         ...this.getRecentHistory()
       ]
 
@@ -247,18 +440,64 @@ export class AIAgent {
 
   /**
    * Chama o LLM (compatível com API OpenAI)
+   * Inclui gerenciamento dinâmico de tokens
    */
-  async callLLM(messages, useTools = true) {
+  async callLLM(messages, useTools = true, retryCount = 0) {
+    const MAX_RETRIES = 2
+    const { contextWindow, reserveForResponse } = this.getContextLimits()
+    
+    // Calcula tokens usados nas mensagens
+    const messagesTokens = this.calculateTotalTokens(messages)
+    
+    // Calcula tokens para tools (se habilitadas)
+    let toolsTokens = 0
+    let availableTools = []
+    if (useTools) {
+      availableTools = this.getAvailableTools()
+      if (availableTools.length > 0) {
+        // Estima tokens das definições de tools
+        toolsTokens = this.estimateTokens(JSON.stringify(availableTools))
+      }
+    }
+    
+    // Calcula total e verifica se cabe
+    const usedTokens = messagesTokens + toolsTokens
+    const availableForResponse = contextWindow - usedTokens - 50
+    
+    // Se tools ocupam muito espaço, desabilita tools
+    if (toolsTokens > contextWindow * 0.6) {
+      console.warn(`[AI Agent] ⚠️ Tools muito grandes (${toolsTokens} tokens). Desabilitando tools.`)
+      useTools = false
+      availableTools = []
+      toolsTokens = 0
+    }
+    
+    // Recalcula após possível remoção de tools
+    const finalUsedTokens = messagesTokens + toolsTokens
+    const finalAvailable = contextWindow - finalUsedTokens - 50
+    
+    // Garante um mínimo de tokens para resposta
+    const minResponseTokens = 256
+    let maxTokens = Math.max(minResponseTokens, Math.min(finalAvailable, reserveForResponse))
+    
+    // Se ainda não couber, trunca mensagens
+    if (finalAvailable < minResponseTokens) {
+      console.warn(`[AI Agent] ⚠️ Contexto cheio: ${finalUsedTokens}/${contextWindow} tokens`)
+      maxTokens = minResponseTokens
+    }
+    
+    console.log(`[AI Agent] Tokens: msgs=${messagesTokens}, tools=${toolsTokens}, max_resp=${maxTokens}, ctx=${contextWindow}`)
+    
     const body = {
       model: this.settings.model,
       messages: messages,
       temperature: this.settings.temperature,
-      max_tokens: this.settings.maxTokens
+      max_tokens: maxTokens
     }
 
-    // Adiciona tools se habilitado
-    if (useTools) {
-      body.tools = toolDefinitions
+    // Adiciona tools se habilitado e couber
+    if (useTools && availableTools.length > 0) {
+      body.tools = availableTools
       body.tool_choice = 'auto'
     }
 
@@ -273,6 +512,35 @@ export class AIAgent {
 
       if (!response.ok) {
         const errorText = await response.text()
+        
+        // Trata erro de contexto específico
+        if (errorText.includes('maximum context length') || errorText.includes('too many tokens')) {
+          if (retryCount >= MAX_RETRIES) {
+            console.error('[AI Agent] Máximo de retries atingido. Abortando.')
+            throw new Error('Contexto muito grande. Tente uma pergunta mais curta ou limpe o histórico.')
+          }
+          
+          console.warn(`[AI Agent] Erro de contexto - retry ${retryCount + 1}/${MAX_RETRIES}`)
+          
+          // Estratégia de retry:
+          // 1. Primeiro retry: desabilita tools
+          // 2. Segundo retry: trunca histórico também
+          const shouldDisableTools = retryCount === 0 && useTools
+          const shouldTruncateHistory = retryCount >= 1
+          
+          if (shouldTruncateHistory) {
+            const halfLength = Math.max(1, Math.floor(this.conversationHistory.length / 2))
+            this.conversationHistory = this.conversationHistory.slice(-halfLength)
+          }
+          
+          const retryMessages = [
+            { role: 'system', content: this.getSystemPrompt() },
+            ...this.getRecentHistory()
+          ]
+          
+          return await this.callLLM(retryMessages, !shouldDisableTools && useTools, retryCount + 1)
+        }
+        
         throw new Error(`Erro na API: ${response.status} - ${errorText}`)
       }
 
@@ -303,21 +571,65 @@ export class AIAgent {
 
   /**
    * Limita o tamanho do histórico para evitar estouro de contexto
+   * Agora usa contagem de tokens ao invés de apenas número de mensagens
    */
   trimHistory() {
+    const { contextWindow, reserveForResponse } = this.getContextLimits()
+    const systemPromptTokens = this.estimateTokens(this.getSystemPrompt())
+    const maxHistoryTokens = contextWindow - systemPromptTokens - reserveForResponse - 100 // margem
+    
+    // Remove mensagens antigas até caber no limite de tokens
+    while (this.conversationHistory.length > 0) {
+      const historyTokens = this.calculateTotalTokens(this.conversationHistory)
+      if (historyTokens <= maxHistoryTokens) break
+      
+      // Remove a mensagem mais antiga (preserva a última do usuário se possível)
+      if (this.conversationHistory.length > 2) {
+        this.conversationHistory.shift()
+      } else {
+        // Se só sobraram 2 mensagens e ainda não cabe, trunca o conteúdo
+        const oldestMsg = this.conversationHistory[0]
+        if (oldestMsg && oldestMsg.content && oldestMsg.content.length > 500) {
+          oldestMsg.content = oldestMsg.content.substring(0, 500) + '\n... [truncado]'
+        }
+        break
+      }
+    }
+    
+    // Limite máximo de mensagens como fallback
     if (this.conversationHistory.length > MAX_HISTORY_MESSAGES * 2) {
-      // Mantém apenas as últimas N mensagens
       this.conversationHistory = this.conversationHistory.slice(-MAX_HISTORY_MESSAGES * 2)
     }
   }
 
   /**
    * Retorna histórico recente para enviar ao LLM
+   * Garante que o total de tokens não ultrapasse o limite
    */
   getRecentHistory() {
-    // Retorna as últimas mensagens, limitando o tamanho
-    const recent = this.conversationHistory.slice(-MAX_HISTORY_MESSAGES)
-    return recent
+    const { contextWindow, reserveForResponse } = this.getContextLimits()
+    const systemPromptTokens = this.estimateTokens(this.getSystemPrompt())
+    const maxHistoryTokens = contextWindow - systemPromptTokens - reserveForResponse - 100
+    
+    // Começa do fim e vai adicionando mensagens até atingir o limite
+    const result = []
+    let currentTokens = 0
+    
+    for (let i = this.conversationHistory.length - 1; i >= 0; i--) {
+      const msg = this.conversationHistory[i]
+      const msgTokens = this.estimateMessageTokens(msg)
+      
+      if (currentTokens + msgTokens > maxHistoryTokens) {
+        // Não cabe mais, para aqui
+        break
+      }
+      
+      result.unshift(msg)
+      currentTokens += msgTokens
+    }
+    
+    console.log(`[AI Agent] Histórico: ${result.length} msgs, ~${currentTokens} tokens (limite: ${maxHistoryTokens})`)
+    return result
   }
 
   /**
@@ -481,6 +793,90 @@ ${matchList}
         
         return output
       
+      // ===== Terminal Tools =====
+      case 'run_command':
+        const cmdStatus = result.success ? '✅' : '❌'
+        const cmdOutput = result.output || '(sem output)'
+        return `${cmdStatus} **Comando:** \`${result.command}\`
+
+\`\`\`
+${cmdOutput.substring(0, 2000)}
+\`\`\`
+${result.exit_code !== 0 ? `\n*Código de saída: ${result.exit_code}*` : ''}`
+      
+      case 'open_persistent_terminal':
+        return `💻 **Terminal persistente criado!**
+
+- **ID:** \`${result.terminal_id}\`
+- **Nome:** ${result.name}
+- **Diretório:** \`${result.cwd}\`
+
+Use \`run_persistent_command\` com este ID para executar comandos.`
+      
+      case 'run_persistent_command':
+        const pcOutput = result.output || '(aguardando output...)'
+        const statusMsg = result.completed ? '(comando finalizado)' : '(comando rodando em background)'
+        return `💻 **Terminal \`${result.terminal_id}\`** ${statusMsg}
+
+\`\`\`
+${pcOutput.substring(0, 2000)}
+\`\`\``
+      
+      case 'kill_persistent_terminal':
+        return `✅ **Terminal encerrado:** \`${result.terminal_id}\``
+      
+      case 'list_terminals':
+        if (!result.terminals || result.terminals.length === 0) {
+          return '**Nenhum terminal ativo.**'
+        }
+        const termList = result.terminals.map(t => 
+          `- \`${t.id}\` - ${t.name} ${t.running ? '🟢' : '🔴'}`
+        ).join('\n')
+        return `**Terminais ativos (${result.count}):**\n\n${termList}`
+      
+      // ===== File Management =====
+      case 'create_file_or_folder':
+        const typeIcon = result.type === 'folder' ? '📁' : '📄'
+        return `✅ ${typeIcon} **${result.type === 'folder' ? 'Pasta' : 'Arquivo'} criado:** \`${result.path}\``
+      
+      case 'delete_file_or_folder':
+        return `✅ **${result.type === 'folder' ? 'Pasta' : 'Arquivo'} deletado:** \`${result.path}\``
+      
+      case 'rename_file':
+        return `✅ **Renomeado:** \`${result.old_path}\` → \`${result.new_path}\``
+      
+      // ===== Fast Apply =====
+      case 'edit_file':
+        const editDiff = result.new_lines - result.old_lines
+        const editDiffStr = editDiff > 0 ? `+${editDiff}` : editDiff < 0 ? `${editDiff}` : '0'
+        let editOutput = `✅ **Arquivo editado:** \`${result.path}\`
+
+- **Blocos aplicados:** ${result.blocks_applied}
+- **Linhas:** ${result.old_lines} → ${result.new_lines} (${editDiffStr})`
+        if (result.errors && result.errors.length > 0) {
+          editOutput += `\n- **⚠️ Erros:** ${result.errors.length} bloco(s) não aplicado(s)`
+        }
+        return editOutput
+      
+      // ===== Git Tools =====
+      case 'git_status':
+        const filesStr = result.files.map(f => `\`${f.status}\` ${f.path}`).join('\n') || '(nenhuma mudança)'
+        return `**🔀 Git Status (branch: \`${result.branch}\`):**
+
+- Staged: ${result.staged}
+- Unstaged: ${result.unstaged}
+- Untracked: ${result.untracked}
+
+${filesStr}`
+      
+      case 'git_log':
+        const commits = result.commits || []
+        if (commits.length === 0) return '**Nenhum commit encontrado.**'
+        const commitList = commits.slice(0, 5).map(c => 
+          `- \`${c.shortHash}\` ${c.subject} *(${c.author})*`
+        ).join('\n')
+        return `**📝 Últimos commits:**\n\n${commitList}`
+      
       default:
         return `**Resultado:**
 
@@ -510,8 +906,12 @@ ${JSON.stringify(result, null, 2)}
     const validTools = [
       'read_file', 'list_directory', 'search_files', 'grep_code', 
       'get_project_structure', 'get_file_info',
-      'write_file', 'patch_file', 'insert_at_line',
-      'search_codebase'
+      'write_file', 'patch_file', 'insert_at_line', 'edit_file',
+      'create_file_or_folder', 'delete_file_or_folder', 'rename_file',
+      'run_command', 'open_persistent_terminal', 'run_persistent_command',
+      'kill_persistent_terminal', 'list_terminals',
+      'search_codebase',
+      'git_status', 'git_diff', 'git_commit', 'git_stage', 'git_log', 'git_branch'
     ]
     
     // Padrões para detectar chamadas de tool

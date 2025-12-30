@@ -5,7 +5,7 @@ import os from 'node:os'
 import { exec } from 'node:child_process'
 import { promisify } from 'node:util'
 import pty from 'node-pty'
-import { AIAgent, toolExecutor, toolDefinitions } from './ai/index.js'
+import { AIAgent, toolExecutor, toolDefinitions, CHAT_MODES } from './ai/index.js'
 
 const execAsync = promisify(exec)
 
@@ -578,10 +578,6 @@ app.whenReady().then(() => {
       const workspacePath = assertWorkspaceSelected()
       const { stdout } = await execAsync('git status --porcelain', { cwd: workspacePath })
       
-      console.log('=== GIT STATUS DEBUG ===')
-      console.log('Workspace:', workspacePath)
-      console.log('Raw output:', JSON.stringify(stdout))
-      
       const files = []
       const lines = stdout.trim().split('\n').filter(Boolean)
       
@@ -598,8 +594,6 @@ app.whenReady().then(() => {
         const isStaged = X !== ' ' && X !== '?'
         const isUnstaged = Y !== ' ' || parsedStatus === 'untracked'
         
-        console.log(`File: ${filePath}, Status: "${status}", X="${X}", Y="${Y}", staged=${isStaged}, unstaged=${isUnstaged}`)
-        
         files.push({
           path: filePath,
           status: parsedStatus,
@@ -607,9 +601,6 @@ app.whenReady().then(() => {
           unstaged: isUnstaged
         })
       }
-      
-      console.log('Files returned:', JSON.stringify(files))
-      console.log('=== END GIT STATUS DEBUG ===')
       
       return files
     } catch (e) {
@@ -630,11 +621,12 @@ app.whenReady().then(() => {
     }
   })
   
-  // Stage arquivo
+  // Stage arquivo (melhorado)
   ipcMain.handle('git:stage', async (_evt, filePath) => {
     try {
       const workspacePath = assertWorkspaceSelected()
-      await execAsync(`git add "${filePath}"`, { cwd: workspacePath })
+      // Usa -A para adicionar tudo (novo no Void)
+      await execAsync(`git add -A "${filePath}"`, { cwd: workspacePath })
       return true
     } catch (e) {
       console.error('git:stage failed', e)
@@ -732,6 +724,161 @@ app.whenReady().then(() => {
     } catch (e) {
       console.error('git:init failed', e)
       throw new Error('Failed to initialize git repository')
+    }
+  })
+  
+  // ===== Comandos Git Avançados =====
+  
+  // Pull
+  ipcMain.handle('git:pull', async () => {
+    try {
+      const workspacePath = assertWorkspaceSelected()
+      const { stdout, stderr } = await execAsync('git pull', { cwd: workspacePath })
+      return { success: true, message: stdout || stderr }
+    } catch (e) {
+      console.error('git:pull failed', e)
+      throw new Error('Failed to pull: ' + e.message)
+    }
+  })
+  
+  // Push
+  ipcMain.handle('git:push', async () => {
+    try {
+      const workspacePath = assertWorkspaceSelected()
+      const { stdout, stderr } = await execAsync('git push', { cwd: workspacePath })
+      return { success: true, message: stdout || stderr }
+    } catch (e) {
+      console.error('git:push failed', e)
+      throw new Error('Failed to push: ' + e.message)
+    }
+  })
+  
+  // Fetch
+  ipcMain.handle('git:fetch', async () => {
+    try {
+      const workspacePath = assertWorkspaceSelected()
+      const { stdout, stderr } = await execAsync('git fetch', { cwd: workspacePath })
+      return { success: true, message: stdout || stderr }
+    } catch (e) {
+      console.error('git:fetch failed', e)
+      throw new Error('Failed to fetch: ' + e.message)
+    }
+  })
+  
+  // Listar branches
+  ipcMain.handle('git:branches', async () => {
+    try {
+      const workspacePath = assertWorkspaceSelected()
+      const { stdout } = await execAsync('git branch -a', { cwd: workspacePath })
+      
+      const branches = stdout.trim().split('\n').map(line => {
+        const isCurrent = line.startsWith('*')
+        const name = line.replace(/^\*?\s+/, '').trim()
+        const isRemote = name.startsWith('remotes/')
+        
+        return {
+          name: name.replace('remotes/', ''),
+          current: isCurrent,
+          remote: isRemote
+        }
+      }).filter(b => b.name && b.name !== 'HEAD')
+      
+      return branches
+    } catch (e) {
+      console.error('git:branches failed', e)
+      return []
+    }
+  })
+  
+  // Criar branch
+  ipcMain.handle('git:createBranch', async (_evt, branchName) => {
+    try {
+      const workspacePath = assertWorkspaceSelected()
+      await execAsync(`git branch "${branchName}"`, { cwd: workspacePath })
+      return true
+    } catch (e) {
+      console.error('git:createBranch failed', e)
+      throw new Error(`Failed to create branch ${branchName}`)
+    }
+  })
+  
+  // Trocar branch
+  ipcMain.handle('git:checkout', async (_evt, branchName) => {
+    try {
+      const workspacePath = assertWorkspaceSelected()
+      await execAsync(`git checkout "${branchName}"`, { cwd: workspacePath })
+      return true
+    } catch (e) {
+      console.error('git:checkout failed', e)
+      throw new Error(`Failed to checkout branch ${branchName}`)
+    }
+  })
+  
+  // Deletar branch
+  ipcMain.handle('git:deleteBranch', async (_evt, branchName) => {
+    try {
+      const workspacePath = assertWorkspaceSelected()
+      await execAsync(`git branch -d "${branchName}"`, { cwd: workspacePath })
+      return true
+    } catch (e) {
+      console.error('git:deleteBranch failed', e)
+      throw new Error(`Failed to delete branch ${branchName}`)
+    }
+  })
+  
+  // Histórico de commits
+  ipcMain.handle('git:log', async (_evt, options = {}) => {
+    try {
+      const workspacePath = assertWorkspaceSelected()
+      const limit = options.limit || 50
+      const skip = options.skip || 0
+      
+      // Format: hash|author|email|date|subject
+      const format = '%H|%an|%ae|%ai|%s'
+      const cmd = `git log --format="${format}" --max-count=${limit} --skip=${skip}`
+      
+      const { stdout } = await execAsync(cmd, { cwd: workspacePath })
+      
+      if (!stdout.trim()) {
+        return []
+      }
+      
+      const commits = stdout.trim().split('\n').map(line => {
+        const [hash, author, email, date, subject] = line.split('|')
+        return {
+          hash: hash.trim(),
+          shortHash: hash.trim().substring(0, 7),
+          author: author.trim(),
+          email: email.trim(),
+          date: date.trim(),
+          subject: subject.trim()
+        }
+      })
+      
+      return commits
+    } catch (e) {
+      console.error('git:log failed', e)
+      return []
+    }
+  })
+  
+  // Diff de arquivo
+  ipcMain.handle('git:diff', async (_evt, filePath, staged = false) => {
+    try {
+      const workspacePath = assertWorkspaceSelected()
+      const flag = staged ? '--cached' : ''
+      const cmd = `git diff ${flag} -- "${filePath}"`
+      
+      const { stdout } = await execAsync(cmd, { cwd: workspacePath })
+      
+      if (!stdout.trim()) {
+        return null
+      }
+      
+      return stdout
+    } catch (e) {
+      console.error('git:diff failed', e)
+      return null
     }
   })
 
@@ -918,6 +1065,37 @@ app.whenReady().then(() => {
   // Obter definições das tools (para exibir no frontend)
   ipcMain.handle('ai:getTools', async () => {
     return toolDefinitions
+  })
+  
+  // Obter modos de chat disponíveis
+  ipcMain.handle('ai:getModes', async () => {
+    return CHAT_MODES
+  })
+  
+  // Definir modo de chat
+  ipcMain.handle('ai:setMode', async (_evt, mode) => {
+    try {
+      if (!aiAgent) {
+        const settings = await loadSettings()
+        aiAgent = new AIAgent(settings.ai)
+        if (currentWorkspacePath) {
+          aiAgent.setWorkspace(currentWorkspacePath)
+          toolExecutor.setWorkspace(currentWorkspacePath)
+        }
+      }
+      return aiAgent.setMode(mode)
+    } catch (e) {
+      console.error('ai:setMode failed', e)
+      throw e
+    }
+  })
+  
+  // Obter modo atual
+  ipcMain.handle('ai:getMode', async () => {
+    if (aiAgent) {
+      return aiAgent.getMode()
+    }
+    return { mode: 'agent', ...CHAT_MODES.agent }
   })
   
   // Executar uma tool diretamente (útil para testes)

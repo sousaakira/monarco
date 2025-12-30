@@ -168,6 +168,7 @@
 .icon-folder-tree,
 .icon-magnifying-glass,
 .icon-code-branch,
+.icon-list-check,
 .icon-bug,
 .icon-grid-2 {
   display: inline-block;
@@ -196,4 +197,8 @@
 
 .icon-grid-2 {
   background-image: url('./fonts/solid/table-cells.svg');
+}
+
+.icon-list-check {
+  background-image: url('./fonts/solid/list-check.svg');
 }

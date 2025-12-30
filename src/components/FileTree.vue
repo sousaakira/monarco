@@ -1,5 +1,5 @@
 <script setup>
-import { computed } from 'vue'
+import { computed, shallowRef } from 'vue'
 
 const props = defineProps({ 
   node: Object,
@@ -10,9 +10,12 @@ const props = defineProps({
 
 const emit = defineEmits(['open', 'select', 'toggle', 'context'])
 
-const isNodeExpanded = computed(() => 
-  (props.expandedMap ?? {})[props.node?.path] !== false
-)
+// Usa shallowRef para evitar reatividade profunda desnecessária
+const isNodeExpanded = computed(() => {
+  // Por padrão, todos os nós começam COLAPSADOS (false)
+  // Apenas expande se explicitamente definido como true
+  return (props.expandedMap ?? {})[props.node?.path] === true
+})
 
 const isSelected = computed(() => 
   props.node?.path === props.selectedPath
@@ -22,64 +25,63 @@ const rowStyle = computed(() => ({
   paddingLeft: `${props.depth * 16 + 4}px`
 }))
 
+// Cache de mapeamento de ícones (definido fora para reutilizar)
+const FOLDER_TYPES = {
+  'src': 'folder_type_src',
+  'source': 'folder_type_src',
+  'component': 'folder_type_component',
+  'components': 'folder_type_component',
+  'test': 'folder_type_test',
+  'tests': 'folder_type_test',
+  'spec': 'folder_type_test',
+  '__tests__': 'folder_type_test',
+  'dist': 'folder_type_dist',
+  'build': 'folder_type_dist',
+  'out': 'folder_type_dist',
+  'node_modules': 'folder_type_node',
+  'electron': 'folder_type_electron',
+  'docs': 'folder_type_docs',
+  'doc': 'folder_type_docs',
+  'assets': 'folder_type_asset',
+  'public': 'folder_type_asset',
+  'static': 'folder_type_asset',
+  'images': 'folder_type_images',
+  'img': 'folder_type_images',
+  'server': 'folder_type_server',
+  'api': 'folder_type_api',
+  'config': 'folder_type_config',
+  '.vscode': 'folder_type_vscode',
+  '.git': 'folder_type_git',
+  'fonts': 'folder_type_fonts'
+}
+
+const FILE_ICON_MAP = {
+  'js': 'file_type_js', 'cjs': 'file_type_js', 'mjs': 'file_type_js',
+  'ts': 'file_type_typescript', 'tsx': 'file_type_typescript',
+  'html': 'file_type_html', 'css': 'file_type_css', 'scss': 'file_type_scss',
+  'json': 'file_type_json', 'vue': 'file_type_vue', 'md': 'file_type_markdown',
+  'py': 'file_type_python', 'go': 'file_type_go', 'java': 'file_type_java',
+  'cpp': 'file_type_cpp', 'c': 'file_type_c', 'h': 'file_type_cheader',
+  'cs': 'file_type_csharp', 'php': 'file_type_php', 'rb': 'file_type_ruby',
+  'xml': 'file_type_xml', 'yaml': 'file_type_yaml', 'yml': 'file_type_yaml',
+  'sql': 'file_type_db', 'svg': 'file_type_svg',
+  'png': 'file_type_image', 'jpg': 'file_type_image', 'jpeg': 'file_type_image',
+  'gif': 'file_type_image', 'webp': 'file_type_image',
+  'pdf': 'file_type_pdf', 'zip': 'file_type_zip', 'rar': 'file_type_zip'
+}
+
 const getIconPath = computed(() => {
   const node = props.node
   if (!node) return '/assets/icons/default_file.svg'
   
   if (node.kind === 'dir') {
     const name = node.name.toLowerCase()
-    
-    const folderTypes = {
-      'src': 'folder_type_src',
-      'source': 'folder_type_src',
-      'component': 'folder_type_component',
-      'components': 'folder_type_component',
-      'test': 'folder_type_test',
-      'tests': 'folder_type_test',
-      'spec': 'folder_type_test',
-      '__tests__': 'folder_type_test',
-      'dist': 'folder_type_dist',
-      'build': 'folder_type_dist',
-      'out': 'folder_type_dist',
-      'node_modules': 'folder_type_node',
-      'electron': 'folder_type_electron',
-      'docs': 'folder_type_docs',
-      'doc': 'folder_type_docs',
-      'assets': 'folder_type_asset',
-      'public': 'folder_type_asset',
-      'static': 'folder_type_asset',
-      'images': 'folder_type_images',
-      'img': 'folder_type_images',
-      'server': 'folder_type_server',
-      'api': 'folder_type_api',
-      'config': 'folder_type_config',
-      '.vscode': 'folder_type_vscode',
-      '.git': 'folder_type_git',
-      'fonts': 'folder_type_fonts'
-    }
-    
-    const folderType = folderTypes[name] || 'default_folder'
+    const folderType = FOLDER_TYPES[name] || 'default_folder'
     const suffix = isNodeExpanded.value ? '_opened' : ''
     return `/assets/icons/${folderType}${suffix}.svg`
   } else {
     const ext = node.name.split('.').pop()?.toLowerCase() || ''
-    
-    const iconMap = {
-      'js': 'file_type_js', 'cjs': 'file_type_js', 'mjs': 'file_type_js',
-      'ts': 'file_type_typescript', 'tsx': 'file_type_typescript',
-      'html': 'file_type_html', 'css': 'file_type_css', 'scss': 'file_type_scss',
-      'json': 'file_type_json', 'vue': 'file_type_vue', 'md': 'file_type_markdown',
-      'py': 'file_type_python', 'go': 'file_type_go', 'java': 'file_type_java',
-      'cpp': 'file_type_cpp', 'c': 'file_type_c', 'h': 'file_type_cheader',
-      'cs': 'file_type_csharp', 'php': 'file_type_php', 'rb': 'file_type_ruby',
-      'xml': 'file_type_xml', 'yaml': 'file_type_yaml', 'yml': 'file_type_yaml',
-      'sql': 'file_type_db', 'svg': 'file_type_svg',
-      'png': 'file_type_image', 'jpg': 'file_type_image', 'jpeg': 'file_type_image',
-      'gif': 'file_type_image', 'webp': 'file_type_image',
-      'pdf': 'file_type_pdf', 'zip': 'file_type_zip', 'rar': 'file_type_zip'
-    }
-    
-    return `/assets/icons/${iconMap[ext] || 'default_file'}.svg`
+    return `/assets/icons/${FILE_ICON_MAP[ext] || 'default_file'}.svg`
   }
 })
 
@@ -134,20 +136,23 @@ function handleContext(e) {
     </div>
     
     <!-- Children -->
-    <div v-if="node.kind === 'dir' && node.children?.length && isNodeExpanded" class="tree-children">
-      <FileTree
-        v-for="child in node.children"
-        :key="child.path"
-        :node="child"
-        :selectedPath="selectedPath"
-        :expandedMap="expandedMap"
-        :depth="depth + 1"
-        @open="emit('open', $event)"
-        @select="emit('select', $event)"
-        @toggle="emit('toggle', $event)"
-        @context="emit('context', $event)"
-      />
-    </div>
+    <!-- Só renderiza filhos se estiver expandido E tiver filhos -->
+    <template v-if="node.kind === 'dir' && isNodeExpanded && node.children?.length">
+      <div class="tree-children">
+        <FileTree
+          v-for="child in node.children"
+          :key="child.path"
+          :node="child"
+          :selectedPath="selectedPath"
+          :expandedMap="expandedMap"
+          :depth="depth + 1"
+          @open="emit('open', $event)"
+          @select="emit('select', $event)"
+          @toggle="emit('toggle', $event)"
+          @context="emit('context', $event)"
+        />
+      </div>
+    </template>
   </div>
 </template>
 

@@ -3,4 +3,4 @@
  */
 
 export { toolDefinitions, toolExecutor } from './tools.js'
-export { AIAgent, aiAgent } from './agent.js'
+export { AIAgent, aiAgent, CHAT_MODES } from './agent.js'

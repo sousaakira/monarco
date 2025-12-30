@@ -1,111 +1,140 @@
 <template>
-  <div class="ai-chat-sidebar" :class="{ 'ai-chat-sidebar-open': props.isOpen }">
-    <div class="chat-header">
-      <div class="chat-title">
-        <span class="chat-icon icon-comment-dots"></span>
-        <span>Assistente IA</span>
-      </div>
-      <div class="header-actions">
-        <button title="Nova conversa" class="header-btn" @click="clearChat"><span class="icon-plus"></span></button>
-        <button title="Configurações" class="header-btn"><span class="icon-gear"></span></button>
-        <button title="Fechar" class="header-btn" @click="closeChat"><span class="icon-xmark"></span></button>
+  <div class="void-chat-panel" :class="{ open: props.isOpen }">
+    <!-- Chat Container -->
+    <div class="chat-container" ref="chatContainer">
+      <!-- Messages -->
+      <div class="messages-wrapper" ref="messagesWrapper">
+        <template v-for="(msg, index) in messages" :key="index">
+          <!-- User Message -->
+          <div v-if="msg.role === 'user'" class="message user-message">
+            <div class="message-content" v-html="parseMessage(msg.content)"></div>
+          </div>
+          
+          <!-- Assistant Message -->
+          <div v-else-if="msg.role === 'assistant'" class="message assistant-message">
+            <!-- Tool Calls (se houver) -->
+            <div v-if="msg.toolCalls?.length > 0" class="tool-calls-summary">
+              <div v-for="(tool, idx) in msg.toolCalls" :key="idx" class="tool-badge">
+                <svg class="tool-check" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/>
+                  <polyline points="22 4 12 14.01 9 11.01"/>
+                </svg>
+                <span>{{ formatToolName(tool.name) }}</span>
+              </div>
+            </div>
+            <div class="message-content" v-html="parseMessage(msg.content)"></div>
+          </div>
+        </template>
+
+        <!-- Loading State -->
+        <div v-if="isLoading" class="message assistant-message loading">
+          <!-- Tool calls em execução -->
+          <div v-if="currentToolCalls.length > 0" class="tool-calls-live">
+            <div v-for="(tool, idx) in currentToolCalls" :key="idx" class="tool-call-item" :class="tool.status">
+              <div class="tool-spinner" v-if="tool.status === 'executing'">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <path d="M21 12a9 9 0 1 1-6.219-8.56"/>
+                </svg>
+              </div>
+              <svg v-else class="tool-done" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/>
+                <polyline points="22 4 12 14.01 9 11.01"/>
+              </svg>
+              <span class="tool-name">{{ formatToolName(tool.name) }}</span>
+            </div>
+          </div>
+          <div v-else class="thinking-indicator">
+            <span class="thinking-dot"></span>
+            <span class="thinking-dot"></span>
+            <span class="thinking-dot"></span>
+          </div>
+        </div>
       </div>
     </div>
-    <div class="chat-content">
-      <div class="messages-container" ref="messagesContainer">
-        <div 
-          v-for="(msg, index) in messages" 
-          :key="index" 
-          :class="['message', msg.role]"
-          v-show="msg.role !== 'system'"
-        >
-          <div class="message-header">
-            <span class="sender-avatar" :class="msg.role === 'assistant' ? 'ai-avatar' : 'user-avatar'"></span>
-            <span class="sender-name">{{ msg.role === 'assistant' ? 'IA' : 'Você' }}</span>
-          </div>
-          <div class="message-content" v-html="parseMessage(msg.content)"></div>
-        </div>
-        <div v-if="isLoading" class="message assistant loading">
-          <div class="message-header">
-            <span class="sender-avatar ai-avatar"></span>
-            <span class="sender-name">IA</span>
-          </div>
-          <!-- Tool calls em execução -->
-          <div v-if="currentToolCalls.length > 0" class="tool-calls-container">
-            <div v-for="(tool, idx) in currentToolCalls" :key="idx" class="tool-call-item">
-              <span class="tool-icon">⚙️</span>
-              <span class="tool-name">{{ tool.name }}</span>
-              <span class="tool-status" :class="tool.status">
-                {{ tool.status === 'executing' ? 'executando...' : 'concluído' }}
-              </span>
-            </div>
-          </div>
-          <div v-else class="message-content typing-indicator">
-            <span></span>
-            <span></span>
-            <span></span>
+
+    <!-- Input Area (Void Style) -->
+    <div class="input-area">
+      <div class="input-container" :class="{ focused: inputFocused }">
+        <!-- Context items -->
+        <div v-if="contextItems.length > 0" class="context-bar">
+          <div v-for="(item, idx) in contextItems" :key="idx" class="context-item">
+            <span class="context-icon">{{ item.icon }}</span>
+            <span class="context-name">{{ item.label }}</span>
+            <button class="context-remove" @click="removeContext(idx)">×</button>
           </div>
         </div>
-      </div>
-      
-      <!-- Input Area estilo Qoder -->
-      <div class="agentchat-container">
-        <div class="agentchat-inner-container">
-          <!-- Context Area -->
-          <div class="agentchat-context-area" v-if="contextItems.length > 0">
-            <div class="agentchat-add-context" @click="addContext">
-              <span class="codicon codicon-add">+</span>
-            </div>
-            <div class="agent-chat-context-items">
-              <div v-for="(item, idx) in contextItems" :key="idx" class="context-item">
-                <span class="context-icon">{{ item.icon }}</span>
-                <span class="context-label">{{ item.label }}</span>
-                <button class="context-remove" @click="removeContext(idx)">×</button>
+        
+        <!-- Input -->
+        <div class="input-row">
+          <div 
+            ref="inputRef"
+            contenteditable="true"
+            class="text-input"
+            @input="updateInput"
+            @keydown="handleKeydown"
+            @paste="handlePaste"
+            @focus="inputFocused = true"
+            @blur="inputFocused = false"
+            :data-placeholder="getPlaceholder()"
+          ></div>
+        </div>
+        
+        <!-- Bottom Bar -->
+        <div class="bottom-bar">
+          <div class="left-controls">
+            <!-- Mode Selector -->
+            <div class="mode-selector" @click.stop="toggleModeMenu">
+              <span class="mode-current">{{ selectedModeLabel }}</span>
+              <svg class="chevron" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <polyline points="6 9 12 15 18 9"/>
+              </svg>
+              
+              <!-- Mode Dropdown -->
+              <div v-if="showModeMenu" class="mode-menu">
+                <div 
+                  v-for="(config, mode) in availableModes" 
+                  :key="mode"
+                  class="mode-item"
+                  :class="{ active: selectedMode === mode }"
+                  @click.stop="selectMode(mode)"
+                >
+                  <span class="mode-name">{{ config.name }}</span>
+                  <span class="mode-desc">{{ config.description }}</span>
+                  <svg v-if="selectedMode === mode" class="mode-check" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <polyline points="20 6 9 17 4 12"/>
+                  </svg>
+                </div>
               </div>
+            </div>
+            
+            <!-- Model -->
+            <div class="model-display">
+              <span>{{ selectedModel }}</span>
             </div>
           </div>
           
-          <!-- Input Container -->
-          <div class="chat-mixed-input-container" :class="{ 'has-content': inputMessage.length > 0 }">
-            <div class="chat-input-wrapper">
-              <div 
-                ref="inputRef"
-                contenteditable="true" 
-                class="chat-input-contenteditable"
-                @input="updateInput"
-                @keydown="handleKeydown"
-                @paste="handlePaste"
-                :data-placeholder="'Pergunte algo ou use @ para mencionar...'"
-              ></div>
-            </div>
-          </div>
-          
-          <!-- Footer -->
-          <div class="agentchat-footer">
-            <div class="footer-selectors">
-              <div class="select-component" @click="toggleModeMenu">
-                <span class="select-text">{{ selectedMode }}</span>
-                <span class="select-icon">▼</span>
-              </div>
-              <div class="select-component" @click="toggleModelMenu">
-                <span class="select-text">{{ selectedModel }}</span>
-                <span class="select-icon">▼</span>
-              </div>
-            </div>
-            <div class="footer-actions-bar">
-              <button class="footer-action-btn" title="Adicionar contexto" @click="addContext">
-                <span class="codicon">+</span>
-              </button>
-              <button 
-                class="footer-action-btn send-action" 
-                :class="{ 'active': inputMessage.trim().length > 0 }"
-                :disabled="!inputMessage.trim() || isLoading"
-                @click="sendPrompt"
-                title="Enviar mensagem"
-              >
-                <span class="send-icon">↑</span>
-              </button>
-            </div>
+          <div class="right-controls">
+            <!-- New Chat -->
+            <button class="icon-btn" @click="clearChat" title="Nova conversa">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <path d="M12 5v14M5 12h14"/>
+              </svg>
+            </button>
+            
+            <!-- Send -->
+            <button 
+              class="send-btn"
+              :class="{ active: inputMessage.trim().length > 0 && !isLoading }"
+              :disabled="!inputMessage.trim() || isLoading"
+              @click="sendPrompt"
+            >
+              <svg v-if="!isLoading" width="16" height="16" viewBox="0 0 20 20" fill="currentColor">
+                <path fill-rule="evenodd" clip-rule="evenodd" d="M5.293 9.707a1 1 0 010-1.414l4-4a1 1 0 011.414 0l4 4a1 1 0 01-1.414 1.414L11 7.414V15a1 1 0 11-2 0V7.414L6.707 9.707a1 1 0 01-1.414 0z"/>
+              </svg>
+              <svg v-else width="16" height="16" viewBox="0 0 24 24" fill="currentColor">
+                <rect x="4" y="4" width="16" height="16" rx="2"/>
+              </svg>
+            </button>
           </div>
         </div>
       </div>
@@ -117,7 +146,6 @@
 import { ref, nextTick, onMounted, onUnmounted, watch } from 'vue'
 import { marked } from 'marked'
 
-// Configura o marked para suportar quebras de linha e código
 marked.setOptions({
   breaks: true,
   gfm: true
@@ -129,30 +157,49 @@ const props = defineProps({
 
 const emit = defineEmits(['close'])
 
+// State
 const messages = ref([
   { role: 'system', content: 'Você é um assistente de IA integrado ao Monarco IDE.' },
-  { role: 'assistant', content: 'Olá! Sou seu assistente de código. Posso explorar seu projeto, ler arquivos e ajudá-lo a entender o código. Como posso ajudar?' }
+  { role: 'assistant', content: 'Como posso ajudar?' }
 ])
 const inputMessage = ref('')
 const isLoading = ref(false)
-const messagesContainer = ref(null)
+const chatContainer = ref(null)
+const messagesWrapper = ref(null)
 const inputRef = ref()
+const inputFocused = ref(false)
 let typingMessageIndex = -1
 
-// Tool calls em progresso
+// Tool calls
 const currentToolCalls = ref([])
-
-// Cleanup function para listener
 let cleanupToolCallListener = null
 
-// Novas variáveis para o estilo Qoder
+// Mode & Model
 const contextItems = ref([])
-const selectedMode = ref('Agent')
+const selectedMode = ref('agent')
+const selectedModeLabel = ref('Agent')
 const selectedModel = ref('Qwen 3B')
+const showModeMenu = ref(false)
+const availableModes = ref({
+  normal: { name: 'Normal', description: 'Chat simples sem ferramentas' },
+  gather: { name: 'Gather', description: 'Apenas ferramentas de leitura' },
+  agent: { name: 'Agent', description: 'Acesso completo a todas as ferramentas' }
+})
+
+// Methods
+function getPlaceholder() {
+  if (selectedMode.value === 'agent') return 'Ask anything... (Ctrl+L)'
+  if (selectedMode.value === 'gather') return 'Ask about your code...'
+  return 'Chat...'
+}
+
+function formatToolName(name) {
+  return name.replace(/_/g, ' ').replace(/\b\w/g, l => l.toUpperCase())
+}
 
 const updateInput = () => {
   if (inputRef.value) {
-    inputMessage.value = inputRef.value.innerHTML || ''
+    inputMessage.value = inputRef.value.innerText || ''
   }
 }
 
@@ -169,47 +216,61 @@ const handlePaste = (e) => {
   document.execCommand('insertText', false, text)
 }
 
-const addContext = () => {
-  // TODO: Implementar seleção de contexto
-  console.log('Add context clicked')
-}
-
 const removeContext = (idx) => {
   contextItems.value.splice(idx, 1)
 }
 
 const toggleModeMenu = () => {
-  // TODO: Implementar menu de modos
-  console.log('Toggle mode menu')
+  showModeMenu.value = !showModeMenu.value
 }
 
-const toggleModelMenu = () => {
-  // TODO: Implementar menu de modelos
-  console.log('Toggle model menu')
+const selectMode = async (mode) => {
+  try {
+    if (window.monarco?.ai?.setMode) {
+      await window.monarco.ai.setMode(mode)
+    }
+    selectedMode.value = mode
+    selectedModeLabel.value = availableModes.value[mode]?.name || mode
+    showModeMenu.value = false
+  } catch (e) {
+    console.error('Erro ao mudar modo:', e)
+  }
+}
+
+// Smooth scroll to bottom
+const scrollToBottom = () => {
+  if (chatContainer.value) {
+    chatContainer.value.scrollTo({
+      top: chatContainer.value.scrollHeight,
+      behavior: 'smooth'
+    })
+  }
 }
 
 const sendPrompt = async () => {
-  // Extrai texto puro do contenteditable
   const textContent = inputRef.value?.innerText?.trim() || ''
   if (!textContent || isLoading.value) return
 
-  const userMessage = { role: 'user', content: textContent }
-  messages.value.push(userMessage)
+  messages.value.push({ role: 'user', content: textContent })
   inputMessage.value = ''
+  
   nextTick(() => {
     if (inputRef.value) {
       inputRef.value.innerHTML = ''
       inputRef.value.focus()
     }
+    scrollToBottom()
   })
+  
   isLoading.value = true
   currentToolCalls.value = []
   typingMessageIndex = messages.value.length
   messages.value.push({ role: 'assistant', content: '' })
+  
+  await nextTick()
   scrollToBottom()
 
   try {
-    // Usa a nova API de IA via IPC
     const result = await window.monarco.ai.chat(textContent)
     
     messages.value[typingMessageIndex] = { 
@@ -221,10 +282,10 @@ const sendPrompt = async () => {
     await nextTick()
     scrollToBottom()
   } catch (error) {
-    console.error('Erro ao enviar mensagem para a IA:', error)
+    console.error('Erro ao enviar mensagem:', error)
     messages.value[typingMessageIndex] = { 
       role: 'assistant', 
-      content: `Erro ao comunicar com o assistente: ${error.message || 'Erro desconhecido'}` 
+      content: `Erro: ${error.message || 'Erro desconhecido'}` 
     }
   } finally {
     isLoading.value = false
@@ -232,14 +293,7 @@ const sendPrompt = async () => {
   }
 }
 
-const scrollToBottom = () => {
-  if (messagesContainer.value) {
-    messagesContainer.value.scrollTop = messagesContainer.value.scrollHeight
-  }
-}
-
 const clearChat = async () => {
-  // Limpa histórico no backend
   try {
     await window.monarco.ai.clear()
   } catch (e) {
@@ -248,53 +302,76 @@ const clearChat = async () => {
   
   const systemMessage = messages.value.find(m => m.role === 'system')
   messages.value = systemMessage ? [systemMessage] : []
-  messages.value.push({ 
-    role: 'assistant', 
-    content: 'Conversa reiniciada. Como posso ajudá-lo com seu código?' 
-  })
+  messages.value.push({ role: 'assistant', content: 'Como posso ajudar?' })
   currentToolCalls.value = []
   nextTick().then(scrollToBottom)
-}
-
-const closeChat = () => {
-  emit('close')
 }
 
 const parseMessage = (text) => {
   if (!text) return ''
   try {
-    // Converte markdown para HTML
     let html = marked.parse(text)
     
-    // Detecta blocos de código com linguagem e adiciona botão de aplicar
+    let codeBlockIndex = 0
+    
+    // Add Apply button to ALL code blocks
     html = html.replace(
-      /<pre><code class="language-(\w+)">(.*?)<\/code><\/pre>/gs,
-      (match, lang, code) => {
-        // Decodifica HTML entities
-        const decodedCode = code
+      /<pre><code(?:\s+class="language-(\w+)")?>(([\s\S]*?))<\/code><\/pre>/g,
+      (match, lang, code, innerCode) => {
+        const decodedCode = (innerCode || code)
           .replace(/&lt;/g, '<')
           .replace(/&gt;/g, '>')
           .replace(/&amp;/g, '&')
           .replace(/&quot;/g, '"')
+          .replace(/&#39;/g, "'")
         
-        // Detecta se é um arquivo específico nos comentários
-        const fileMatch = decodedCode.match(/\/\/ File: (.+)/) || decodedCode.match(/# File: (.+)/)
+        // Detectar caminho do arquivo de várias formas
+        const fileMatch = 
+          decodedCode.match(/^\/\/\s*File:\s*(.+)$/m) ||
+          decodedCode.match(/^#\s*File:\s*(.+)$/m) ||
+          decodedCode.match(/^\/\*\*?\s*File:\s*(.+?)\s*\*\//m) ||
+          decodedCode.match(/^<!--\s*File:\s*(.+?)\s*-->/m) ||
+          // Detectar caminhos absolutos ou relativos no início
+          decodedCode.match(/^(\/[\w\-./]+\.\w+)$/m) ||
+          decodedCode.match(/^([\w\-./]+\.\w{1,6})\s*$/m)
         
-        if (fileMatch) {
-          const filePath = fileMatch[1].trim()
-          return `
-            <div class="code-block-with-actions">
-              <div class="code-header">
-                <span class="code-language">${lang}</span>
-                <span class="code-file">${filePath}</span>
-                <button class="apply-code-btn" onclick="window.applyCode('${filePath.replace(/'/g, "\\'")}')">✓ Aplicar</button>
-              </div>
-              <pre><code class="language-${lang}">${code}</code></pre>
-            </div>
-          `
+        let filePath = fileMatch ? fileMatch[1].trim() : null
+        
+        // Limpar o path se necessário
+        if (filePath) {
+          filePath = filePath.replace(/["'`]/g, '')
         }
         
-        return match
+        const displayLang = lang || 'code'
+        const displayPath = filePath ? filePath.split('/').pop() : displayLang.toUpperCase()
+        const blockId = `code-block-${codeBlockIndex++}`
+        
+        // Armazenar o código para acesso posterior
+        if (typeof window !== 'undefined') {
+          window._codeBlocks = window._codeBlocks || {}
+          window._codeBlocks[blockId] = {
+            code: decodedCode,
+            filePath: filePath,
+            lang: displayLang
+          }
+        }
+        
+        return `
+          <div class="code-block" data-block-id="${blockId}">
+            <div class="code-header">
+              <span class="code-label">${displayPath}</span>
+              <div class="code-actions">
+                <button class="code-action-btn copy-btn" onclick="navigator.clipboard.writeText(window._codeBlocks['${blockId}'].code).then(() => { this.textContent = 'Copied!'; setTimeout(() => this.textContent = 'Copy', 1500) })">
+                  Copy
+                </button>
+                <button class="code-action-btn apply-btn" onclick="window.applyCodeBlock('${blockId}')">
+                  Apply
+                </button>
+              </div>
+            </div>
+            <pre><code class="language-${displayLang}">${code}</code></pre>
+          </div>
+        `
       }
     )
     
@@ -305,72 +382,196 @@ const parseMessage = (text) => {
   }
 }
 
-const getSenderLabel = (role) => {
-  if (role === 'assistant') {
-    return '<span class="icon-comment-dots"></span> AI';
-  }
-  return 'Você';
-}
-
 onMounted(() => {
-  if (messagesContainer.value) {
-    scrollToBottom()
+  scrollToBottom()
+  
+  if (window.monarco?.ai?.getModes) {
+    window.monarco.ai.getModes().then((modes) => {
+      if (modes) availableModes.value = modes
+    }).catch(console.error)
   }
   
-  // Função global para aplicar código
-  window.applyCode = async (filePath) => {
+  const handleClickOutside = (e) => {
+    if (showModeMenu.value && !e.target.closest('.mode-selector')) {
+      showModeMenu.value = false
+    }
+  }
+  document.addEventListener('click', handleClickOutside)
+  
+  // Apply code handler
+  window.applyCodeBlock = async (blockId) => {
     try {
-      // Encontra o bloco de código correspondente no último assistente
-      const lastAssistantMsg = [...messages.value].reverse().find(m => m.role === 'assistant')
-      if (!lastAssistantMsg) return
-      
-      // Extrai código do markdown
-      const codeRegex = new RegExp(`\`\`\`\\w+\\s*\\/\\/\\s*File:\\s*${filePath.replace(/[.*+?^${}()|[\\]\\\\]/g, '\\$&')}\\s*([\\s\\S]*?)\`\`\``, 'i')
-      const match = lastAssistantMsg.content.match(codeRegex)
-      
-      if (!match) {
-        alert('Não foi possível extrair o código')
+      const blockData = window._codeBlocks?.[blockId]
+      if (!blockData) {
+        console.error('Bloco de código não encontrado:', blockId)
         return
       }
       
-      const code = match[1].trim()
+      let { code, filePath, lang } = blockData
       
-      // Usa a tool write_file para aplicar
+      // Se não tem caminho especificado, tentar encontrar de outras formas
+      if (!filePath) {
+        // 1. Tentar usar o arquivo atualmente focado no editor
+        const currentFile = window.monarcoEditor?.getCurrentFile?.()
+        
+        if (currentFile) {
+          // Verificar se a extensão do arquivo atual é compatível com a linguagem
+          const currentExt = currentFile.split('.').pop()?.toLowerCase()
+          const langExts = {
+            'javascript': ['js', 'mjs', 'cjs'],
+            'typescript': ['ts', 'tsx'],
+            'python': ['py'],
+            'html': ['html', 'htm'],
+            'css': ['css', 'scss', 'sass', 'less'],
+            'json': ['json'],
+            'vue': ['vue'],
+            'jsx': ['jsx', 'tsx'],
+            'java': ['java'],
+            'c': ['c', 'h'],
+            'cpp': ['cpp', 'cc', 'cxx', 'hpp'],
+            'go': ['go'],
+            'rust': ['rs'],
+            'php': ['php'],
+            'ruby': ['rb'],
+            'shell': ['sh', 'bash', 'zsh'],
+            'sql': ['sql'],
+            'markdown': ['md'],
+            'yaml': ['yml', 'yaml'],
+            'xml': ['xml']
+          }
+          
+          const compatibleExts = langExts[lang?.toLowerCase()] || []
+          const isCompatible = compatibleExts.length === 0 || compatibleExts.includes(currentExt)
+          
+          if (isCompatible) {
+            filePath = currentFile
+          }
+        }
+      }
+      
+      // 2. Se ainda não tem caminho, tentar buscar pelo nome do arquivo no código
+      if (!filePath) {
+        // Procurar por padrões comuns de referência a arquivos no código
+        const fileNamePatterns = [
+          /\/\/.*?([\w\-]+\.\w{1,6})\s*$/m,
+          /#.*?([\w\-]+\.\w{1,6})\s*$/m,
+          /\/\*.*?([\w\-]+\.\w{1,6}).*?\*\//m
+        ]
+        
+        for (const pattern of fileNamePatterns) {
+          const match = code.match(pattern)
+          if (match) {
+            const fileName = match[1]
+            // Buscar no projeto
+            const foundPath = await window.monarcoEditor?.findFile?.(fileName)
+            if (foundPath) {
+              filePath = foundPath
+              break
+            }
+          }
+        }
+      }
+      
+      // 3. Se ainda não tem caminho, mostrar erro informativo
+      if (!filePath) {
+        messages.value.push({
+          role: 'assistant',
+          content: `⚠️ **Não foi possível aplicar o código**
+
+O código não especifica o arquivo de destino e nenhum arquivo compatível está aberto.
+
+**Soluções:**
+1. Abra o arquivo de destino em uma aba e clique em Apply novamente
+2. Peça para a IA especificar o arquivo: \"melhore o arquivo app.js\" ou \"edite src/main.js\"`
+        })
+        await nextTick()
+        scrollToBottom()
+        return
+      }
+      
+      // Remover a linha do File: se existir
+      code = code
+        .replace(/^\/\/\s*File:.*\n?/m, '')
+        .replace(/^#\s*File:.*\n?/m, '')
+        .replace(/^\/\*\*?\s*File:.*?\*\/\n?/m, '')
+        .replace(/^<!--\s*File:.*?-->\n?/m, '')
+        .trim()
+      
       await window.monarco.ai.executeTool('write_file', {
         path: filePath,
         content: code
       })
       
-      // Feedback visual
+      // Atualizar o conteúdo no editor se o arquivo estiver aberto
+      window.monarcoEditor?.updateFileContent?.(filePath, code)
+      
+      const fileName = filePath.split('/').pop()
       messages.value.push({
         role: 'assistant',
-        content: `✅ **Arquivo atualizado:** \`${filePath}\``
+        content: `✅ Applied changes to \`${fileName}\``
       })
       
       await nextTick()
       scrollToBottom()
     } catch (error) {
       console.error('Erro ao aplicar código:', error)
-      alert(`Erro ao aplicar: ${error.message}`)
+      messages.value.push({
+        role: 'assistant',
+        content: `❌ Erro ao aplicar: ${error.message}`
+      })
+      await nextTick()
+      scrollToBottom()
     }
   }
   
-  // Configura listener para tool calls
+  // Legacy handler (manter compatibilidade)
+  window.applyCode = async (filePath) => {
+    try {
+      const lastAssistantMsg = [...messages.value].reverse().find(m => m.role === 'assistant')
+      if (!lastAssistantMsg) return
+      
+      const codeRegex = new RegExp(`\`\`\`\\w*\\s*(?:\\/\\/|#|\\/\\*\\*?)\\s*File:\\s*${filePath.replace(/[.*+?^${}()|[\\]\\\\]/g, '\\$&')}[^\\n]*\\n([\\s\\S]*?)\`\`\``, 'i')
+      const match = lastAssistantMsg.content.match(codeRegex)
+      
+      if (!match) {
+        console.error('Código não encontrado para:', filePath)
+        return
+      }
+      
+      const code = match[1].trim()
+      
+      await window.monarco.ai.executeTool('write_file', {
+        path: filePath,
+        content: code
+      })
+      
+      messages.value.push({
+        role: 'assistant',
+        content: `✅ Applied changes to \`${filePath}\``
+      })
+      
+      await nextTick()
+      scrollToBottom()
+    } catch (error) {
+      console.error('Erro ao aplicar código:', error)
+    }
+  }
+  
+  // Tool call listener
   if (window.monarco?.ai?.onToolCall) {
     cleanupToolCallListener = window.monarco.ai.onToolCall((toolInfo) => {
-      // Atualiza lista de tool calls em progresso
       const existingIndex = currentToolCalls.value.findIndex(t => t.name === toolInfo.name)
       if (existingIndex >= 0) {
         currentToolCalls.value[existingIndex] = toolInfo
       } else {
         currentToolCalls.value.push(toolInfo)
       }
+      nextTick().then(scrollToBottom)
     })
   }
 })
 
 onUnmounted(() => {
-  // Limpa listener de tool calls
   if (cleanupToolCallListener) {
     cleanupToolCallListener()
     cleanupToolCallListener = null
@@ -378,441 +579,203 @@ onUnmounted(() => {
 })
 
 watch(() => props.isOpen, (newVal) => {
-  if (!newVal) {
-    closeChat()
-  }
-})
-
-watch(inputMessage, (newVal) => {
-  if (inputRef.value && inputRef.value.innerHTML !== newVal) {
-    inputRef.value.innerHTML = newVal
-  }
+  if (!newVal) emit('close')
 })
 </script>
 
 <style scoped>
-.ai-chat-sidebar {
+/* Void-style Chat Panel */
+.void-chat-panel {
   display: flex;
   flex-direction: column;
   height: 100%;
   background: var(--panel);
   border-left: 1px solid var(--border);
-  overflow: hidden;
+  font-size: 13px;
 }
 
-.chat-header {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  padding: 12px 16px;
-  border-bottom: 1px solid var(--border);
-  background: var(--panel-2);
-}
-
-.chat-title {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  font-weight: 600;
-  font-size: 14px;
-}
-
-.chat-icon {
-  font-size: 16px;
-  color: var(--accent);
-}
-
-.header-actions {
-  display: flex;
-  gap: 8px;
-}
-
-.header-btn {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  width: 28px;
-  height: 28px;
-  border-radius: 4px;
-  background: transparent;
-  border: none;
-  color: var(--text);
-  opacity: 0.7;
-  cursor: pointer;
-  padding: 0;
-  transition: all 0.2s ease;
-}
-
-.header-btn:hover {
-  background: rgba(255,255,255,0.1);
-  opacity: 1;
-}
-
-.chat-tab {
-  display: flex;
-  height: 34px;
-  min-width: 0;
-  max-width: 160px;
-  cursor: pointer;
-  user-select: none;
-  align-items: center;
-  gap: 1.5px;
-  padding: 3px 10px;
-  border-right: 1px solid var(--codeium-tab-border, var(--border));
-  background: var(--ide-tab-active-background-color, var(--panel-2));
-  position: relative;
-  white-space: nowrap;
-}
-
-.chat-tab.active .tab-indicator {
-  position: absolute;
-  left: 0;
-  right: 0;
-  top: 0;
-  height: 1px;
-  background: var(--codeium-focus-border, var(--accent));
-}
-
-.tab-close-btn {
-  margin-left: auto;
-  background: transparent;
-  border: none;
-  opacity: 0;
-  cursor: pointer;
-  padding: 2px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  color: var(--text);
-}
-
-.chat-tab:hover .tab-close-btn {
-  opacity: 0.8;
-}
-
-.tab-actions {
-  display: flex;
-  gap: 2px;
-  align-items: center;
-  padding-left: 2px;
-}
-
-.tab-action-btn {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  background: transparent;
-  border: none;
-  width: 20px;
-  height: 20px;
-  border-radius: 4px;
-  opacity: 0.7;
-  color: var(--text);
-  cursor: pointer;
-  padding: 0;
-}
-
-.tab-action-btn:hover {
-  opacity: 1;
-  background: rgba(255,255,255,0.1);
-}
-
-.chat-content {
-  display: flex;
-  flex-direction: column;
+/* Chat Container - Scrollable */
+.chat-container {
   flex: 1;
-  overflow: hidden;
-  min-height: 0; /* Importante para flexbox permitir scroll */
-}
-
-.messages-container {
-  flex: 1;
-  padding: 16px;
   overflow-y: auto;
   overflow-x: hidden;
+  scroll-behavior: smooth;
+}
+
+.chat-container::-webkit-scrollbar {
+  width: 6px;
+}
+
+.chat-container::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.chat-container::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.1);
+  border-radius: 3px;
+}
+
+.messages-wrapper {
+  padding: 16px;
   display: flex;
   flex-direction: column;
   gap: 16px;
-  min-height: 0; /* Importante para flexbox permitir scroll */
-  
-  /* Scrollbar estilo VS Code */
-  scrollbar-width: thin;
-  scrollbar-color: rgba(121, 121, 121, 0.4) transparent;
 }
 
-/* Scrollbar WebKit (Chrome, Edge, Safari) */
-.messages-container::-webkit-scrollbar {
-  width: 10px;
-}
-
-.messages-container::-webkit-scrollbar-track {
-  background: transparent;
-}
-
-.messages-container::-webkit-scrollbar-thumb {
-  background: rgba(121, 121, 121, 0.4);
-  border-radius: 5px;
-  border: 2px solid transparent;
-  background-clip: padding-box;
-}
-
-.messages-container::-webkit-scrollbar-thumb:hover {
-  background: rgba(121, 121, 121, 0.7);
-  border: 2px solid transparent;
-  background-clip: padding-box;
-}
-
-.messages-container::-webkit-scrollbar-corner {
-  background: transparent;
-}
-
-.timeline-indicator {
-  position: absolute;
-  left: 0;
-  top: 4px;
-  z-index: 50;
-  transition: transform 0.3s;
-  transform: translateX(-100%);
-  padding: 1px 2px;
-  opacity: 0.5;
-}
-
-.ai-chat-sidebar-open .timeline-indicator:hover {
-  transform: translateX(0);
-  opacity: 1;
-}
-
-.timeline-marks {
-  display: flex;
-  max-height: 12rem;
-  flex-direction: column;
-  overflow-y: auto;
-  scrollbar-width: none;
-}
-
-.timeline-mark {
-  display: flex;
-  align-items: center;
-  justify-content: flex-end;
-  margin: 4px 0;
-  opacity: 0.3;
-  transition: opacity 0.2s;
-  cursor: pointer;
-}
-
-.timeline-mark:hover,
-.timeline-mark.active {
-  opacity: 1;
-}
-
-.timeline-line {
-  height: 1px;
-  width: 2rem;
-  background: var(--ide-editor-color, var(--text));
-  margin: 2px 0;
-}
-
-.timeline-label {
-  font-size: 10px;
-  margin-right: 4px;
-}
-
+/* Messages */
 .message {
-  max-width: 90%;
-  border-radius: 8px;
-  font-size: 14px;
-  line-height: 1.5;
-  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.1);
-  overflow: hidden;
-  animation: message-fade-in 0.3s ease;
-  flex-shrink: 0; /* Não permite que as mensagens encolham */
+  animation: fadeIn 0.2s ease;
 }
 
-@keyframes message-fade-in {
-  from { opacity: 0; transform: translateY(10px); }
+@keyframes fadeIn {
+  from { opacity: 0; transform: translateY(4px); }
   to { opacity: 1; transform: translateY(0); }
 }
 
-.message.user {
-  background: rgba(79, 140, 255, 0.08);
-  border: 1px solid rgba(79, 140, 255, 0.15);
-  align-self: flex-end;
-  border-radius: 8px 8px 2px 8px;
-  margin-left: auto;
-}
-
-.message.assistant {
+.user-message {
+  padding: 12px 16px;
   background: rgba(255, 255, 255, 0.03);
-  border: 1px solid var(--border);
-  align-self: flex-start;
-  border-radius: 8px 8px 8px 2px;
-  margin-right: auto;
+  border-radius: 8px;
+  border-left: 2px solid var(--accent);
 }
 
-.message.loading {
-  opacity: 0.7;
-}
-
-.message.system {
-  display: none;
-}
-
-.message-header {
-  padding: 8px 12px 2px;
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
-
-.sender-avatar {
-  width: 20px;
-  height: 20px;
-  border-radius: 50%;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  flex-shrink: 0;
-}
-
-.user-avatar {
-  background: rgba(79, 140, 255, 0.2);
-  color: var(--accent);
-}
-
-.ai-avatar {
-  background: rgba(255, 255, 255, 0.1);
-  color: var(--muted);
-}
-
-.sender-avatar:before {
-  font-size: 12px;
-}
-
-.user-avatar:before {
-  content: 'U';
-}
-
-.ai-avatar:before {
-  content: 'AI';
-  font-size: 10px;
-}
-
-.sender-name {
-  font-size: 12px;
-  font-weight: 600;
-  color: var(--muted);
+.assistant-message {
+  padding: 0;
 }
 
 .message-content {
-  padding: 4px 12px 12px;
   color: var(--text);
+  line-height: 1.6;
+  word-break: break-word;
 }
 
-.typing-indicator {
-  display: flex;
-  align-items: center;
-  gap: 4px;
-  padding: 10px;
-}
-
-.typing-indicator span {
-  width: 8px;
-  height: 8px;
-  background: var(--muted);
-  border-radius: 50%;
-  display: inline-block;
-  animation: typing 1.4s infinite ease-in-out;
-}
-
-.typing-indicator span:nth-child(1) { animation-delay: 0s; }
-.typing-indicator span:nth-child(2) { animation-delay: 0.2s; }
-.typing-indicator span:nth-child(3) { animation-delay: 0.4s; }
-
-@keyframes typing {
-  0%, 60%, 100% { transform: translateY(0); }
-  30% { transform: translateY(-5px); }
-}
-
-.ai-chat-input {
-  border: 1px solid var(--border);
-  background: var(--panel);
-  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
-  z-index: 10;
-  overflow: hidden;
-  border-radius: 12px;
-  padding: 6px;
-  color: var(--text);
-  display: flex;
-  flex-direction: column;
-}
-
-.agentchat-container {
-  border-top: 1px solid var(--border);
-  background: var(--panel-2);
-  flex-shrink: 0;
-}
-
-.agentchat-inner-container {
-  display: flex;
-  flex-direction: column;
-  padding: 12px;
-  gap: 10px;
-}
-
-.agentchat-context-area {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 8px;
-  background: var(--panel);
-  border-radius: 8px;
-  border: 1px solid var(--border);
-}
-
-.agentchat-add-context {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  width: 24px;
-  height: 24px;
-  border-radius: 4px;
-  cursor: pointer;
-  color: var(--muted);
-  transition: all 0.15s ease;
-}
-
-.agentchat-add-context:hover {
-  background: rgba(255,255,255,0.08);
-  color: var(--text);
-}
-
-.agent-chat-context-items {
+/* Tool Calls Summary (after completion) */
+.tool-calls-summary {
   display: flex;
   flex-wrap: wrap;
   gap: 6px;
+  margin-bottom: 12px;
+}
+
+.tool-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 8px;
+  background: rgba(52, 211, 153, 0.1);
+  border: 1px solid rgba(52, 211, 153, 0.2);
+  border-radius: 12px;
+  font-size: 11px;
+  color: #34d399;
+}
+
+.tool-check {
+  color: #34d399;
+}
+
+/* Tool Calls Live (during execution) */
+.tool-calls-live {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-bottom: 8px;
+}
+
+.tool-call-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  background: rgba(255, 255, 255, 0.02);
+  border-radius: 6px;
+  font-size: 12px;
+}
+
+.tool-call-item.executing {
+  border-left: 2px solid var(--accent);
+}
+
+.tool-call-item.completed {
+  border-left: 2px solid #34d399;
+}
+
+.tool-spinner {
+  animation: spin 1s linear infinite;
+  color: var(--accent);
+}
+
+@keyframes spin {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+
+.tool-done {
+  color: #34d399;
+}
+
+.tool-name {
+  color: var(--text);
+}
+
+/* Thinking Indicator */
+.thinking-indicator {
+  display: flex;
+  gap: 4px;
+  padding: 8px 0;
+}
+
+.thinking-dot {
+  width: 6px;
+  height: 6px;
+  background: var(--muted);
+  border-radius: 50%;
+  animation: pulse 1.4s ease-in-out infinite;
+}
+
+.thinking-dot:nth-child(2) { animation-delay: 0.2s; }
+.thinking-dot:nth-child(3) { animation-delay: 0.4s; }
+
+@keyframes pulse {
+  0%, 80%, 100% { transform: scale(0.6); opacity: 0.4; }
+  40% { transform: scale(1); opacity: 1; }
+}
+
+/* Input Area */
+.input-area {
+  padding: 12px 16px 16px;
+  background: var(--panel);
+  border-top: 1px solid var(--border);
+}
+
+.input-container {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  transition: border-color 0.15s ease, box-shadow 0.15s ease;
+}
+
+.input-container.focused {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px rgba(0, 122, 204, 0.15);
+}
+
+/* Context Bar */
+.context-bar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--border);
 }
 
 .context-item {
   display: flex;
   align-items: center;
   gap: 4px;
-  padding: 4px 8px;
-  background: var(--panel-2);
-  border: 1px solid var(--border);
+  padding: 2px 8px;
+  background: rgba(255, 255, 255, 0.05);
   border-radius: 4px;
-  font-size: 12px;
-  color: var(--text);
-}
-
-.context-icon {
-  font-size: 14px;
-}
-
-.context-label {
-  max-width: 120px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  font-size: 11px;
 }
 
 .context-remove {
@@ -822,38 +785,22 @@ watch(inputMessage, (newVal) => {
   cursor: pointer;
   padding: 0 2px;
   font-size: 14px;
-  line-height: 1;
 }
 
 .context-remove:hover {
-  color: var(--danger);
+  color: #ef4444;
 }
 
-/* Input Container estilo Qoder */
-.chat-mixed-input-container {
-  border: 1px solid var(--border);
-  border-radius: 12px;
-  background: var(--panel);
-  transition: border-color 0.2s ease;
-  overflow: hidden;
+/* Input Row */
+.input-row {
+  padding: 10px 12px;
 }
 
-.chat-mixed-input-container:focus-within,
-.chat-mixed-input-container.has-content {
-  border-color: var(--accent);
-}
-
-.chat-input-wrapper {
-  padding: 0;
-}
-
-.chat-input-contenteditable {
-  min-height: 44px;
-  max-height: 180px;
-  padding: 12px 14px;
+.text-input {
+  min-height: 20px;
+  max-height: 200px;
   outline: none;
   color: var(--text);
-  font-family: inherit;
   font-size: 13px;
   line-height: 1.5;
   overflow-y: auto;
@@ -861,537 +808,189 @@ watch(inputMessage, (newVal) => {
   white-space: pre-wrap;
 }
 
-.chat-input-contenteditable:empty:before {
+.text-input:empty:before {
   content: attr(data-placeholder);
   color: var(--muted);
   pointer-events: none;
 }
 
-/* Footer estilo Qoder */
-.agentchat-footer {
+/* Bottom Bar */
+.bottom-bar {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding-top: 8px;
+  padding: 6px 10px;
+  border-top: 1px solid rgba(255, 255, 255, 0.05);
 }
 
-.footer-selectors {
+.left-controls,
+.right-controls {
   display: flex;
-  gap: 8px;
+  align-items: center;
+  gap: 6px;
 }
 
-.select-component {
+/* Mode Selector */
+.mode-selector {
   display: flex;
   align-items: center;
   gap: 4px;
-  padding: 4px 10px;
-  background: var(--panel);
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  cursor: pointer;
-  font-size: 12px;
-  color: var(--muted);
-  transition: all 0.15s ease;
-}
-
-.select-component:hover {
-  border-color: var(--accent);
-  color: var(--text);
-}
-
-.select-text {
-  font-weight: 500;
-}
-
-.select-icon {
-  font-size: 8px;
-  opacity: 0.7;
-}
-
-.footer-actions-bar {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-}
-
-.footer-action-btn {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  width: 28px;
-  height: 28px;
-  border-radius: 6px;
-  background: transparent;
-  border: 1px solid var(--border);
-  color: var(--muted);
-  cursor: pointer;
-  font-size: 14px;
-  transition: all 0.15s ease;
-}
-
-.footer-action-btn:hover {
-  background: rgba(255,255,255,0.06);
-  border-color: var(--accent);
-  color: var(--text);
-}
-
-.footer-action-btn.send-action {
-  background: var(--panel);
-}
-
-.footer-action-btn.send-action.active {
-  background: var(--accent);
-  border-color: var(--accent);
-  color: #fff;
-}
-
-.footer-action-btn.send-action:disabled {
-  opacity: 0.4;
-  cursor: not-allowed;
-}
-
-.send-icon {
-  font-weight: bold;
-  font-size: 16px;
-}
-
-.chat-input-area {
-  display: flex;
-  padding: 12px 16px;
-  gap: 10px;
-  border-top: 1px solid var(--border);
-  background: var(--panel-2);
-}
-
-.chat-input-container {
-  flex: 1;
-  border: 1px solid var(--border);
-  border-radius: 20px;
-  position: relative;
-  background: var(--panel);
-  transition: all 0.2s ease;
-}
-
-.chat-input-container.expanded {
-  border-color: var(--accent);
-}
-
-.chat-input {
-  width: 100%;
-  min-height: 36px;
-  max-height: 120px;
-  border: none;
-  outline: none;
-  background: transparent;
-  font-family: inherit;
-  font-size: 14px;
-  color: var(--text);
-  resize: none;
-  padding: 8px 16px;
-  overflow-y: auto;
-  direction: ltr;
-  text-align: left;
-}
-
-
-.codicon {
-  font-family: codicon;
-  font-size: 16px;
-  font-style: normal;
-  display: inline-block;
-}
-
-.icon-comment-dots:before { content: '💬'; }
-.icon-xmark:before { content: '✕'; }
-.icon-gear:before { content: '⚙️'; }
-.icon-plus:before { content: '+'; }
-.icon-trash:before { content: '🗑️'; }
-.icon-paperclip:before { content: '📎'; }
-.icon-paper-plane:before { content: '➤'; }
-.icon-chevron-down:before { content: '▼'; }
-
-.chat-footer {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  padding: 8px 16px;
-  background: var(--panel);
-  border-top: 1px solid var(--border);
-}
-
-.model-selector {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  background: var(--panel-2);
   padding: 4px 8px;
-  border-radius: 4px;
-  cursor: pointer;
-  border: 1px solid var(--border);
-}
-
-.model-name {
-  font-size: 12px;
-  color: var(--muted);
-}
-
-.model-toggle {
-  background: transparent;
-  border: none;
-  color: var(--muted);
-  padding: 0;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-}
-
-.footer-actions {
-  display: flex;
-  gap: 8px;
-}
-
-.footer-btn {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  width: 28px;
-  height: 28px;
-  border-radius: 4px;
-  background: transparent;
-  border: none;
-  color: var(--muted);
-  opacity: 0.7;
-  cursor: pointer;
-  transition: all 0.2s ease;
-}
-
-.footer-btn:hover {
-  background: rgba(255,255,255,0.1);
-  opacity: 1;
-}
-
-.component-tooltip {
-  display: inline-block;
-}
-
-.select2-component-icon {
-  margin-left: 8px;
-  font-size: 12px;
-}
-
-.chat-actions {
-  display: flex;
-  gap: 8px;
-  align-items: center;
-}
-
-.action-btn {
-  width: 36px;
-  height: 36px;
-  border-radius: 50%;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  border: none;
-  background: transparent;
-  color: var(--muted);
-  cursor: pointer;
-  transition: all 0.2s ease;
-}
-
-.action-btn:hover {
-  background: rgba(255, 255, 255, 0.05);
-  color: var(--text);
-}
-
-.action-btn.send-btn {
-  background: var(--panel);
-  border: 1px solid var(--border);
-}
-
-.action-btn.send-btn.active {
-  background: var(--accent);
-  color: white;
-  border-color: transparent;
-}
-
-.action-btn.send-btn:disabled {
-  opacity: 0.5;
-  cursor: not-allowed;
-}
-
-.actions-container {
-  display: flex;
-  gap: 8px;
-  list-style: none;
-  padding: 0;
-  margin: 0;
-}
-
-.action-item {
-  display: flex;
-  align-items: center;
-}
-
-.prompt-enhance-button, .action-label {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  padding: 4px;
-  border-radius: 4px;
-  cursor: pointer;
-  color: var(--accent);
-  text-decoration: none;
-  width: 28px;
-  height: 28px;
-  transition: background-color 0.2s ease;
-}
-
-.prompt-enhance-button:hover, .action-label:hover {
-  background: rgba(79, 140, 255, 0.1);
-}
-
-.action-label[aria-disabled="true"] {
-  opacity: 0.5;
-  cursor: not-allowed;
-  color: var(--muted);
-}
-
-.action-item {
-  display: flex;
-  align-items: center;
-}
-
-.prompt-enhance-button, .action-label {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  padding: 4px;
-  border-radius: 4px;
-  cursor: pointer;
-  color: var(--accent);
-  text-decoration: none;
-  width: 28px;
-  height: 28px;
-  transition: background-color 0.2s ease;
-}
-
-.prompt-enhance-button:hover, .action-label:hover {
-  background: rgba(79, 140, 255, 0.1);
-}
-
-.action-label[aria-disabled="true"] {
-  opacity: 0.5;
-  cursor: not-allowed;
-  color: var(--muted);
-}
-
-.ai-chat-header {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  padding: 12px 16px;
-  border-bottom: 1px solid var(--border);
-  background: var(--panel-2);
-  border-radius: 8px 8px 0 0;
-}
-
-.ai-chat-header h3 {
-  margin: 0;
-  font-size: 14px;
-  font-weight: 600;
-}
-
-.close-btn {
-  background: transparent;
-  border: none;
-  color: var(--muted);
-  font-size: 18px;
-  cursor: pointer;
-  padding: 4px;
-  border-radius: 4px;
-  width: 28px;
-  height: 28px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-}
-
-.close-btn:hover {
-  background: rgba(255, 255, 255, 0.06);
-  color: var(--text);
-}
-
-.codicon {
-  font-size: 14px;
-}
-
-.component-icon {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-}
-
-.codicon-add-line {
-  width: 16px;
-  height: 16px;
-}
-
-.contenteditable {
-  min-height: 2rem;
-  max-height: 300px;
-  overflow-y: auto;
-  outline: none;
-  color: var(--text);
-  font-family: inherit;
-  font-size: 13px;
-  line-height: 1.4;
-  padding: 0;
-  white-space: pre-wrap;
-  word-break: break-word;
-  z-index: 1;
-  position: relative;
-  cursor: text;
-}
-
-.placeholder {
-  pointer-events: none;
-  position: absolute;
-  left: 0;
-  right: 0;
-  top: 0;
-  z-index: 0;
-  display: flex;
-  align-items: center;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  color: var(--text);
-  opacity: 0.5;
-  font-size: 13px;
-  padding: 0;
-}
-
-.hidden {
-  opacity: 0;
-}
-
-.send-button {
-  width: 20px;
-  height: 20px;
-  border-radius: 50%;
-  background: var(--accent);
-  color: white;
-  border: none;
-  cursor: pointer;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  opacity: 1;
-  transition: opacity 0.2s;
-}
-
-.send-button:disabled {
-  opacity: 0.5;
-  cursor: not-allowed;
-}
-
-.message-content pre {
-  background: var(--panel);
-  padding: 12px;
+  background: rgba(255, 255, 255, 0.03);
   border-radius: 6px;
-  overflow-x: auto;
-  margin: 8px 0;
-  border: 1px solid var(--border);
+  cursor: pointer;
   position: relative;
-}
-
-.message-content pre:before {
-  content: attr(data-language);
-  position: absolute;
-  top: 0;
-  right: 0;
-  font-size: 10px;
-  color: var(--muted);
-  background: var(--panel-2);
-  padding: 2px 6px;
-  border-radius: 0 0 0 4px;
-}
-
-.message-content code {
-  font-family: 'Monaco', 'Menlo', 'Ubuntu Mono', monospace;
   font-size: 12px;
-  line-height: 1.4;
   color: var(--text);
 }
 
-/* Tool Calls */
-.tool-calls-container {
-  padding: 8px 12px;
+.mode-selector:hover {
+  background: rgba(255, 255, 255, 0.06);
+}
+
+.chevron {
+  color: var(--muted);
+}
+
+/* Mode Menu */
+.mode-menu {
+  position: absolute;
+  bottom: calc(100% + 8px);
+  left: 0;
+  min-width: 220px;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.4);
+  z-index: 9999;
+  overflow: hidden;
+}
+
+.mode-item {
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: 2px;
+  padding: 10px 12px;
+  cursor: pointer;
+  position: relative;
+  transition: background 0.1s ease;
 }
 
-.tool-call-item {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 6px 10px;
-  background: rgba(255, 255, 255, 0.03);
-  border: 1px solid var(--border);
-  border-radius: 6px;
+.mode-item:hover {
+  background: rgba(255, 255, 255, 0.04);
+}
+
+.mode-item.active {
+  background: rgba(0, 122, 204, 0.1);
+}
+
+.mode-name {
   font-size: 12px;
-}
-
-.tool-icon {
-  font-size: 14px;
-}
-
-.tool-name {
   font-weight: 500;
-  color: var(--accent);
-  font-family: 'Monaco', 'Menlo', monospace;
+  color: var(--text);
 }
 
-.tool-status {
-  margin-left: auto;
+.mode-desc {
   font-size: 11px;
   color: var(--muted);
 }
 
-.tool-status.executing {
+.mode-check {
+  position: absolute;
+  right: 12px;
+  top: 50%;
+  transform: translateY(-50%);
   color: var(--accent);
-  animation: pulse 1.5s infinite;
 }
 
-.tool-status.completed {
-  color: #4caf50;
+/* Model Display */
+.model-display {
+  padding: 4px 8px;
+  font-size: 11px;
+  color: var(--muted);
+  background: rgba(255, 255, 255, 0.02);
+  border-radius: 4px;
 }
 
-@keyframes pulse {
-  0%, 100% { opacity: 1; }
-  50% { opacity: 0.5; }
+/* Icon Button */
+.icon-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  background: transparent;
+  border: none;
+  border-radius: 6px;
+  color: var(--muted);
+  cursor: pointer;
+  transition: all 0.1s ease;
 }
 
-/* Markdown Styles */
-.message-content :deep(h1),
-.message-content :deep(h2),
-.message-content :deep(h3),
-.message-content :deep(h4) {
-  margin: 12px 0 8px 0;
-  font-weight: 600;
+.icon-btn:hover {
+  background: rgba(255, 255, 255, 0.06);
   color: var(--text);
 }
 
-.message-content :deep(h1) { font-size: 1.4em; }
-.message-content :deep(h2) { font-size: 1.2em; }
-.message-content :deep(h3) { font-size: 1.1em; }
-.message-content :deep(h4) { font-size: 1em; }
+/* Send Button */
+.send-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  background: rgba(255, 255, 255, 0.1);
+  border: none;
+  border-radius: 6px;
+  color: var(--bg);
+  cursor: pointer;
+  transition: all 0.1s ease;
+}
 
+.send-btn.active {
+  background: white;
+  color: black;
+}
+
+.send-btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+/* Message Content Styles */
 .message-content :deep(p) {
+  margin: 0 0 8px 0;
+}
+
+.message-content :deep(p:last-child) {
+  margin-bottom: 0;
+}
+
+.message-content :deep(code) {
+  font-family: 'SF Mono', Monaco, Consolas, monospace;
+  font-size: 0.9em;
+  padding: 2px 5px;
+  background: rgba(255, 255, 255, 0.06);
+  border-radius: 3px;
+  color: #e5c07b;
+}
+
+.message-content :deep(pre) {
   margin: 8px 0;
-  line-height: 1.6;
+  padding: 0;
+  background: transparent;
+  border: none;
+}
+
+.message-content :deep(pre code) {
+  display: block;
+  padding: 12px;
+  background: var(--bg);
+  border-radius: 6px;
+  overflow-x: auto;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--text);
 }
 
 .message-content :deep(ul),
@@ -1402,15 +1001,6 @@ watch(inputMessage, (newVal) => {
 
 .message-content :deep(li) {
   margin: 4px 0;
-  line-height: 1.5;
-}
-
-.message-content :deep(blockquote) {
-  margin: 8px 0;
-  padding: 8px 12px;
-  border-left: 3px solid var(--accent);
-  background: rgba(255, 255, 255, 0.03);
-  color: var(--muted);
 }
 
 .message-content :deep(a) {
@@ -1422,126 +1012,76 @@ watch(inputMessage, (newVal) => {
   text-decoration: underline;
 }
 
-.message-content :deep(code) {
-  font-family: 'Monaco', 'Menlo', 'Ubuntu Mono', monospace;
-  font-size: 0.9em;
-  padding: 2px 6px;
-  background: rgba(255, 255, 255, 0.08);
-  border-radius: 4px;
-  color: #e06c75;
-}
-
-.message-content :deep(pre) {
-  margin: 12px 0;
-  padding: 12px;
-  background: var(--panel-2);
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  overflow-x: auto;
-}
-
-.message-content :deep(pre code) {
-  padding: 0;
-  background: transparent;
-  color: var(--text);
-  font-size: 12px;
-  line-height: 1.5;
-}
-
-.message-content :deep(table) {
-  width: 100%;
-  border-collapse: collapse;
-  margin: 12px 0;
-  font-size: 13px;
-}
-
-.message-content :deep(th),
-.message-content :deep(td) {
-  padding: 8px 12px;
-  border: 1px solid var(--border);
-  text-align: left;
-}
-
-.message-content :deep(th) {
-  background: rgba(255, 255, 255, 0.05);
-  font-weight: 600;
-}
-
-.message-content :deep(hr) {
-  margin: 16px 0;
-  border: none;
-  border-top: 1px solid var(--border);
-}
-
 .message-content :deep(strong) {
   font-weight: 600;
   color: var(--text);
 }
 
-.message-content :deep(em) {
-  font-style: italic;
-}
-
-/* Code Block with Apply Button */
-.message-content :deep(.code-block-with-actions) {
+/* Code Block with Actions */
+.message-content :deep(.code-block) {
   margin: 12px 0;
   border: 1px solid var(--border);
-  border-radius: 6px;
+  border-radius: 8px;
   overflow: hidden;
+  background: var(--bg);
 }
 
 .message-content :deep(.code-header) {
   display: flex;
   align-items: center;
-  gap: 12px;
-  padding: 8px 12px;
-  background: rgba(255, 255, 255, 0.03);
+  justify-content: space-between;
+  padding: 6px 12px;
+  background: rgba(255, 255, 255, 0.02);
   border-bottom: 1px solid var(--border);
 }
 
-.message-content :deep(.code-language) {
+.message-content :deep(.code-label) {
   font-size: 11px;
-  font-weight: 600;
-  text-transform: uppercase;
-  color: var(--accent);
-  font-family: 'Monaco', 'Menlo', monospace;
-}
-
-.message-content :deep(.code-file) {
-  flex: 1;
-  font-size: 12px;
   color: var(--muted);
-  font-family: 'Monaco', 'Menlo', monospace;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  font-family: 'SF Mono', Monaco, Consolas, monospace;
 }
 
-.message-content :deep(.apply-code-btn) {
-  padding: 4px 12px;
-  background: var(--accent);
-  color: var(--bg);
+.message-content :deep(.code-actions) {
+  display: flex;
+  gap: 6px;
+}
+
+.message-content :deep(.code-action-btn) {
+  padding: 3px 10px;
+  font-size: 11px;
+  font-weight: 500;
   border: none;
   border-radius: 4px;
-  font-size: 12px;
-  font-weight: 500;
   cursor: pointer;
-  transition: all 0.2s ease;
-  font-family: inherit;
+  transition: all 0.1s ease;
 }
 
-.message-content :deep(.apply-code-btn:hover) {
-  background: var(--accent-hover, #4fa9ff);
-  transform: translateY(-1px);
+.message-content :deep(.copy-btn) {
+  background: rgba(255, 255, 255, 0.06);
+  color: var(--text);
 }
 
-.message-content :deep(.apply-code-btn:active) {
-  transform: translateY(0);
+.message-content :deep(.copy-btn:hover) {
+  background: rgba(255, 255, 255, 0.1);
 }
 
-.message-content :deep(.code-block-with-actions pre) {
+.message-content :deep(.apply-btn) {
+  background: var(--accent);
+  color: white;
+}
+
+.message-content :deep(.apply-btn:hover) {
+  filter: brightness(1.1);
+}
+
+.message-content :deep(.code-block pre) {
   margin: 0;
-  border: none;
+  padding: 12px;
+}
+
+.message-content :deep(.code-block pre code) {
+  padding: 0;
+  background: transparent;
   border-radius: 0;
 }
 </style>

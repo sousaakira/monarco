@@ -10,10 +10,18 @@
 
 import fs from 'node:fs/promises'
 import path from 'node:path'
-import { exec } from 'node:child_process'
+import { exec, spawn } from 'node:child_process'
 import { promisify } from 'node:util'
 
 const execAsync = promisify(exec)
+
+// Configurações de terminal
+const MAX_TERMINAL_OUTPUT = 50000 // Limite de caracteres no output
+const TERMINAL_TIMEOUT = 30000 // 30 segundos de timeout
+const PERSISTENT_TERMINAL_TIMEOUT = 5000 // 5 segundos para comandos persistentes
+
+// Armazena terminais persistentes
+const persistentTerminals = new Map()
 
 /**
  * Definição das tools no formato OpenAI Function Calling
@@ -255,6 +263,298 @@ export const toolDefinitions = [
           }
         },
         required: ['query']
+      }
+    }
+  },
+  // ===== Terminal Tools =====
+  {
+    type: 'function',
+    function: {
+      name: 'run_command',
+      description: 'Executa um comando no terminal e aguarda o resultado. Use para npm, git, build, testes, etc. NÃO use para editar arquivos - use edit_file ao invés.',
+      parameters: {
+        type: 'object',
+        properties: {
+          command: {
+            type: 'string',
+            description: 'O comando a ser executado'
+          },
+          cwd: {
+            type: 'string',
+            description: 'Diretório onde executar (opcional, default: raiz do workspace)'
+          },
+          timeout: {
+            type: 'number',
+            description: 'Timeout em segundos (opcional, default: 30)'
+          }
+        },
+        required: ['command']
+      }
+    }
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'open_persistent_terminal',
+      description: 'Abre um terminal persistente para comandos de longa duração como dev servers (npm run dev). Retorna um ID para usar com run_persistent_command.',
+      parameters: {
+        type: 'object',
+        properties: {
+          cwd: {
+            type: 'string',
+            description: 'Diretório onde abrir o terminal (opcional)'
+          },
+          name: {
+            type: 'string',
+            description: 'Nome identificador do terminal (opcional)'
+          }
+        }
+      }
+    }
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'run_persistent_command',
+      description: 'Executa comando em um terminal persistente criado com open_persistent_terminal. Retorna output após 5 segundos (comando continua rodando em background).',
+      parameters: {
+        type: 'object',
+        properties: {
+          terminal_id: {
+            type: 'string',
+            description: 'ID do terminal persistente'
+          },
+          command: {
+            type: 'string',
+            description: 'Comando a executar'
+          }
+        },
+        required: ['terminal_id', 'command']
+      }
+    }
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'kill_persistent_terminal',
+      description: 'Encerra um terminal persistente.',
+      parameters: {
+        type: 'object',
+        properties: {
+          terminal_id: {
+            type: 'string',
+            description: 'ID do terminal a encerrar'
+          }
+        },
+        required: ['terminal_id']
+      }
+    }
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'list_terminals',
+      description: 'Lista todos os terminais persistentes ativos.',
+      parameters: {
+        type: 'object',
+        properties: {}
+      }
+    }
+  },
+  // ===== File Management Tools =====
+  {
+    type: 'function',
+    function: {
+      name: 'create_file_or_folder',
+      description: 'Cria um arquivo ou pasta. Para criar pasta, o caminho DEVE terminar com /.',
+      parameters: {
+        type: 'object',
+        properties: {
+          path: {
+            type: 'string',
+            description: 'Caminho do arquivo ou pasta (terminar com / para pasta)'
+          },
+          content: {
+            type: 'string',
+            description: 'Conteúdo inicial do arquivo (opcional, apenas para arquivos)'
+          }
+        },
+        required: ['path']
+      }
+    }
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'delete_file_or_folder',
+      description: 'Deleta um arquivo ou pasta.',
+      parameters: {
+        type: 'object',
+        properties: {
+          path: {
+            type: 'string',
+            description: 'Caminho do arquivo ou pasta a deletar'
+          },
+          recursive: {
+            type: 'boolean',
+            description: 'Se true, deleta pasta recursivamente. Default: false'
+          }
+        },
+        required: ['path']
+      }
+    }
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'rename_file',
+      description: 'Renomeia ou move um arquivo/pasta.',
+      parameters: {
+        type: 'object',
+        properties: {
+          old_path: {
+            type: 'string',
+            description: 'Caminho atual do arquivo/pasta'
+          },
+          new_path: {
+            type: 'string',
+            description: 'Novo caminho do arquivo/pasta'
+          }
+        },
+        required: ['old_path', 'new_path']
+      }
+    }
+  },
+  // ===== Fast Apply Tool =====
+  {
+    type: 'function',
+    function: {
+      name: 'edit_file',
+      description: 'Edita um arquivo usando blocos SEARCH/REPLACE. Mais preciso que patch_file para edições complexas.',
+      parameters: {
+        type: 'object',
+        properties: {
+          path: {
+            type: 'string',
+            description: 'Caminho do arquivo a editar'
+          },
+          search_replace_blocks: {
+            type: 'string',
+            description: `String com um ou mais blocos SEARCH/REPLACE no formato:
+<<<<<<< ORIGINAL
+// código original exato
+// código novo
+>>>>>>> UPDATED
+
+Cada bloco ORIGINAL deve ser único no arquivo. Pode ter múltiplos blocos.`
+          }
+        },
+        required: ['path', 'search_replace_blocks']
+      }
+    }
+  },
+  // ===== Git Tools =====
+  {
+    type: 'function',
+    function: {
+      name: 'git_status',
+      description: 'Obtém o status Git do repositório (arquivos modificados, staged, branch atual, etc).',
+      parameters: {
+        type: 'object',
+        properties: {}
+      }
+    }
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'git_diff',
+      description: 'Mostra as mudanças de um arquivo específico no Git.',
+      parameters: {
+        type: 'object',
+        properties: {
+          file_path: {
+            type: 'string',
+            description: 'Caminho do arquivo para ver o diff'
+          },
+          staged: {
+            type: 'boolean',
+            description: 'Se true, mostra diff do staged. Default: false (unstaged)'
+          }
+        },
+        required: ['file_path']
+      }
+    }
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'git_commit',
+      description: 'Cria um commit com os arquivos no stage.',
+      parameters: {
+        type: 'object',
+        properties: {
+          message: {
+            type: 'string',
+            description: 'Mensagem do commit'
+          }
+        },
+        required: ['message']
+      }
+    }
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'git_stage',
+      description: 'Adiciona arquivo(s) ao stage para commit.',
+      parameters: {
+        type: 'object',
+        properties: {
+          file_path: {
+            type: 'string',
+            description: 'Caminho do arquivo ou "." para todos'
+          }
+        },
+        required: ['file_path']
+      }
+    }
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'git_log',
+      description: 'Mostra o histórico de commits.',
+      parameters: {
+        type: 'object',
+        properties: {
+          limit: {
+            type: 'number',
+            description: 'Número máximo de commits. Default: 10'
+          }
+        }
+      }
+    }
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'git_branch',
+      description: 'Gerencia branches Git (listar, criar, trocar).',
+      parameters: {
+        type: 'object',
+        properties: {
+          action: {
+            type: 'string',
+            enum: ['list', 'create', 'checkout'],
+            description: 'Ação: list (listar), create (criar nova), checkout (trocar)'
+          },
+          branch_name: {
+            type: 'string',
+            description: 'Nome da branch (obrigatório para create e checkout)'
+          }
+        },
+        required: ['action']
       }
     }
   }
@@ -862,6 +1162,473 @@ class ToolExecutor {
     if (/^import/.test(match)) return 'import'
     if (/^<[A-Z]/.test(match)) return 'component'
     return 'code'
+  }
+  
+  // ===== Git Tools =====
+  
+  /**
+   * Obtém status Git do repositório
+   */
+  async git_status() {
+    try {
+      const { stdout: branch } = await execAsync('git rev-parse --abbrev-ref HEAD', { cwd: this.workspacePath })
+      const { stdout: status } = await execAsync('git status --porcelain', { cwd: this.workspacePath })
+      
+      const files = status.trim().split('\n').filter(Boolean).map(line => {
+        const status = line.substring(0, 2)
+        const path = line.substring(3).trim()
+        return { status, path }
+      })
+      
+      return {
+        branch: branch.trim(),
+        files,
+        staged: files.filter(f => f.status[0] !== ' ' && f.status[0] !== '?').length,
+        unstaged: files.filter(f => f.status[1] !== ' ').length,
+        untracked: files.filter(f => f.status === '??').length
+      }
+    } catch (e) {
+      throw new Error('Não é um repositório Git')
+    }
+  }
+  
+  /**
+   * Mostra diff de um arquivo
+   */
+  async git_diff({ file_path, staged = false }) {
+    try {
+      const flag = staged ? '--cached' : ''
+      const { stdout } = await execAsync(`git diff ${flag} -- "${file_path}"`, { cwd: this.workspacePath })
+      
+      if (!stdout.trim()) {
+        return { file_path, message: 'Sem mudanças', diff: '' }
+      }
+      
+      return { file_path, diff: stdout }
+    } catch (e) {
+      throw new Error(`Erro ao obter diff: ${e.message}`)
+    }
+  }
+  
+  /**
+   * Cria um commit
+   */
+  async git_commit({ message }) {
+    try {
+      const { stdout } = await execAsync(`git commit -m "${message.replace(/"/g, '\\"')}"`, { cwd: this.workspacePath })
+      return { success: true, message: stdout.trim() }
+    } catch (e) {
+      throw new Error(`Erro ao commitar: ${e.message}`)
+    }
+  }
+  
+  /**
+   * Adiciona arquivo(s) ao stage
+   */
+  async git_stage({ file_path }) {
+    try {
+      await execAsync(`git add "${file_path}"`, { cwd: this.workspacePath })
+      return { success: true, message: `${file_path} adicionado ao stage` }
+    } catch (e) {
+      throw new Error(`Erro ao fazer stage: ${e.message}`)
+    }
+  }
+  
+  /**
+   * Mostra histórico de commits
+   */
+  async git_log({ limit = 10 }) {
+    try {
+      const format = '%H|%an|%ae|%ai|%s'
+      const { stdout } = await execAsync(`git log --format="${format}" --max-count=${limit}`, { cwd: this.workspacePath })
+      
+      if (!stdout.trim()) {
+        return { commits: [] }
+      }
+      
+      const commits = stdout.trim().split('\n').map(line => {
+        const [hash, author, email, date, subject] = line.split('|')
+        return {
+          hash: hash.trim(),
+          shortHash: hash.trim().substring(0, 7),
+          author: author.trim(),
+          email: email.trim(),
+          date: date.trim(),
+          subject: subject.trim()
+        }
+      })
+      
+      return { commits, count: commits.length }
+    } catch (e) {
+      throw new Error(`Erro ao obter log: ${e.message}`)
+    }
+  }
+  
+  /**
+   * Gerencia branches
+   */
+  async git_branch({ action, branch_name }) {
+    try {
+      if (action === 'list') {
+        const { stdout } = await execAsync('git branch -a', { cwd: this.workspacePath })
+        const branches = stdout.trim().split('\n').map(line => {
+          const isCurrent = line.startsWith('*')
+          const name = line.replace(/^\*?\s+/, '').trim()
+          return { name, current: isCurrent }
+        })
+        return { branches }
+      }
+      
+      if (action === 'create') {
+        if (!branch_name) throw new Error('Nome da branch é obrigatório')
+        await execAsync(`git branch "${branch_name}"`, { cwd: this.workspacePath })
+        return { success: true, message: `Branch "${branch_name}" criada` }
+      }
+      
+      if (action === 'checkout') {
+        if (!branch_name) throw new Error('Nome da branch é obrigatório')
+        await execAsync(`git checkout "${branch_name}"`, { cwd: this.workspacePath })
+        return { success: true, message: `Trocado para branch "${branch_name}"` }
+      }
+      
+      throw new Error(`Ação desconhecida: ${action}`)
+    } catch (e) {
+      throw new Error(`Erro em git_branch: ${e.message}`)
+    }
+  }
+  
+  // ===== Terminal Tools =====
+  
+  /**
+   * Executa um comando no terminal e aguarda resultado
+   */
+  async run_command({ command, cwd, timeout = 30 }) {
+    const workDir = cwd ? this.resolvePath(cwd) : this.workspacePath
+    const timeoutMs = timeout * 1000
+    
+    try {
+      const { stdout, stderr } = await execAsync(command, {
+        cwd: workDir,
+        timeout: timeoutMs,
+        maxBuffer: 10 * 1024 * 1024, // 10MB buffer
+        shell: true
+      })
+      
+      let result = ''
+      if (stdout) result += stdout
+      if (stderr) result += (result ? '\n' : '') + stderr
+      
+      // Trunca se muito grande
+      if (result.length > MAX_TERMINAL_OUTPUT) {
+        result = result.substring(0, MAX_TERMINAL_OUTPUT) + '\n... [output truncado]'
+      }
+      
+      return {
+        success: true,
+        command,
+        output: result || '(comando executado sem output)',
+        exit_code: 0
+      }
+    } catch (error) {
+      // Captura output mesmo em erro
+      let output = ''
+      if (error.stdout) output += error.stdout
+      if (error.stderr) output += (output ? '\n' : '') + error.stderr
+      if (!output) output = error.message
+      
+      return {
+        success: false,
+        command,
+        output: output.substring(0, MAX_TERMINAL_OUTPUT),
+        exit_code: error.code || 1,
+        error: error.killed ? 'Timeout atingido' : 'Comando falhou'
+      }
+    }
+  }
+  
+  /**
+   * Abre um terminal persistente
+   */
+  async open_persistent_terminal({ cwd, name }) {
+    const workDir = cwd ? this.resolvePath(cwd) : this.workspacePath
+    const terminalId = `term_${Date.now()}_${Math.random().toString(36).substr(2, 6)}`
+    
+    const terminal = {
+      id: terminalId,
+      name: name || `Terminal ${persistentTerminals.size + 1}`,
+      cwd: workDir,
+      process: null,
+      output: [],
+      createdAt: new Date().toISOString()
+    }
+    
+    persistentTerminals.set(terminalId, terminal)
+    
+    return {
+      terminal_id: terminalId,
+      name: terminal.name,
+      cwd: workDir,
+      message: 'Terminal persistente criado. Use run_persistent_command para executar comandos.'
+    }
+  }
+  
+  /**
+   * Executa comando em terminal persistente
+   */
+  async run_persistent_command({ terminal_id, command }) {
+    const terminal = persistentTerminals.get(terminal_id)
+    if (!terminal) {
+      throw new Error(`Terminal não encontrado: ${terminal_id}`)
+    }
+    
+    return new Promise((resolve, reject) => {
+      const output = []
+      let timeoutId
+      
+      // Spawn do processo
+      const proc = spawn(command, [], {
+        cwd: terminal.cwd,
+        shell: true,
+        stdio: ['pipe', 'pipe', 'pipe']
+      })
+      
+      terminal.process = proc
+      
+      proc.stdout.on('data', (data) => {
+        output.push(data.toString())
+        terminal.output.push(data.toString())
+      })
+      
+      proc.stderr.on('data', (data) => {
+        output.push(data.toString())
+        terminal.output.push(data.toString())
+      })
+      
+      proc.on('error', (err) => {
+        clearTimeout(timeoutId)
+        reject(new Error(`Erro ao executar: ${err.message}`))
+      })
+      
+      proc.on('close', (code) => {
+        clearTimeout(timeoutId)
+        resolve({
+          terminal_id,
+          command,
+          output: output.join('').substring(0, MAX_TERMINAL_OUTPUT),
+          exit_code: code,
+          completed: true
+        })
+      })
+      
+      // Timeout - retorna output parcial após 5 segundos
+      timeoutId = setTimeout(() => {
+        resolve({
+          terminal_id,
+          command,
+          output: output.join('').substring(0, MAX_TERMINAL_OUTPUT) || '(aguardando output...)',
+          completed: false,
+          message: 'Comando ainda rodando em background'
+        })
+      }, PERSISTENT_TERMINAL_TIMEOUT)
+    })
+  }
+  
+  /**
+   * Encerra um terminal persistente
+   */
+  async kill_persistent_terminal({ terminal_id }) {
+    const terminal = persistentTerminals.get(terminal_id)
+    if (!terminal) {
+      throw new Error(`Terminal não encontrado: ${terminal_id}`)
+    }
+    
+    if (terminal.process) {
+      terminal.process.kill('SIGTERM')
+      // Força kill após 2 segundos
+      setTimeout(() => {
+        if (terminal.process && !terminal.process.killed) {
+          terminal.process.kill('SIGKILL')
+        }
+      }, 2000)
+    }
+    
+    persistentTerminals.delete(terminal_id)
+    
+    return {
+      success: true,
+      terminal_id,
+      message: `Terminal ${terminal.name} encerrado`
+    }
+  }
+  
+  /**
+   * Lista terminais persistentes
+   */
+  async list_terminals() {
+    const terminals = []
+    for (const [id, terminal] of persistentTerminals) {
+      terminals.push({
+        id,
+        name: terminal.name,
+        cwd: terminal.cwd,
+        running: terminal.process && !terminal.process.killed,
+        createdAt: terminal.createdAt
+      })
+    }
+    return { terminals, count: terminals.length }
+  }
+  
+  // ===== File Management Tools =====
+  
+  /**
+   * Cria arquivo ou pasta
+   */
+  async create_file_or_folder({ path: filePath, content = '' }) {
+    const resolved = this.resolvePath(filePath)
+    const isFolder = filePath.endsWith('/')
+    
+    if (isFolder) {
+      await fs.mkdir(resolved, { recursive: true })
+      return {
+        path: filePath,
+        type: 'folder',
+        action: 'created'
+      }
+    } else {
+      // Cria diretório pai se não existir
+      const dir = path.dirname(resolved)
+      await fs.mkdir(dir, { recursive: true })
+      
+      // Cria arquivo
+      await fs.writeFile(resolved, content, 'utf8')
+      return {
+        path: filePath,
+        type: 'file',
+        action: 'created',
+        bytes: content.length
+      }
+    }
+  }
+  
+  /**
+   * Deleta arquivo ou pasta
+   */
+  async delete_file_or_folder({ path: filePath, recursive = false }) {
+    const resolved = this.resolvePath(filePath)
+    
+    const stat = await fs.stat(resolved)
+    const isFolder = stat.isDirectory()
+    
+    if (isFolder) {
+      if (recursive) {
+        await fs.rm(resolved, { recursive: true, force: true })
+      } else {
+        await fs.rmdir(resolved)
+      }
+    } else {
+      await fs.unlink(resolved)
+    }
+    
+    return {
+      path: filePath,
+      type: isFolder ? 'folder' : 'file',
+      action: 'deleted'
+    }
+  }
+  
+  /**
+   * Renomeia ou move arquivo/pasta
+   */
+  async rename_file({ old_path, new_path }) {
+    const oldResolved = this.resolvePath(old_path)
+    const newResolved = this.resolvePath(new_path)
+    
+    // Cria diretório pai se não existir
+    const dir = path.dirname(newResolved)
+    await fs.mkdir(dir, { recursive: true })
+    
+    await fs.rename(oldResolved, newResolved)
+    
+    return {
+      old_path,
+      new_path,
+      action: 'renamed'
+    }
+  }
+  
+  // ===== Fast Apply Tool =====
+  
+  /**
+   * Edita arquivo usando blocos SEARCH/REPLACE (Fast Apply)
+   */
+  async edit_file({ path: filePath, search_replace_blocks }) {
+    const resolved = this.resolvePath(filePath)
+    let content = await fs.readFile(resolved, 'utf8')
+    const originalContent = content
+    
+    // Parse dos blocos SEARCH/REPLACE
+    const ORIGINAL = '<<<<<<< ORIGINAL'
+    const DIVIDER = '======='
+    const UPDATED = '>>>>>>> UPDATED'
+    
+    const blocks = []
+    const regex = new RegExp(
+      `${ORIGINAL}\\s*\n([\\s\\S]*?)\n${DIVIDER}\\s*\n([\\s\\S]*?)\n${UPDATED}`,
+      'g'
+    )
+    
+    let match
+    while ((match = regex.exec(search_replace_blocks)) !== null) {
+      blocks.push({
+        search: match[1].trim(),
+        replace: match[2].trim()
+      })
+    }
+    
+    if (blocks.length === 0) {
+      throw new Error('Nenhum bloco SEARCH/REPLACE válido encontrado. Use o formato:\n<<<<<<< ORIGINAL\ncódigo original\n=======\ncódigo novo\n>>>>>>> UPDATED')
+    }
+    
+    // Aplica cada bloco
+    const applied = []
+    const errors = []
+    
+    for (const block of blocks) {
+      // Tenta match exato primeiro
+      if (content.includes(block.search)) {
+        content = content.replace(block.search, block.replace)
+        applied.push({ search: block.search.substring(0, 50) + '...' })
+      } else {
+        // Tenta match com normalização de whitespace
+        const normalizedSearch = block.search.replace(/\s+/g, '\\s+')
+        const normalizedRegex = new RegExp(normalizedSearch)
+        
+        if (normalizedRegex.test(content)) {
+          content = content.replace(normalizedRegex, block.replace)
+          applied.push({ search: block.search.substring(0, 50) + '... (whitespace normalizado)' })
+        } else {
+          errors.push({ search: block.search.substring(0, 80), error: 'Texto não encontrado no arquivo' })
+        }
+      }
+    }
+    
+    if (applied.length === 0) {
+      throw new Error(`Nenhum bloco aplicado. Erros: ${JSON.stringify(errors)}`)
+    }
+    
+    // Salva o arquivo modificado
+    await fs.writeFile(resolved, content, 'utf8')
+    
+    return {
+      path: filePath,
+      action: 'edited',
+      blocks_applied: applied.length,
+      blocks_failed: errors.length,
+      old_lines: originalContent.split('\n').length,
+      new_lines: content.split('\n').length,
+      applied,
+      errors: errors.length > 0 ? errors : undefined
+    }
   }
 }
 
