@@ -140,11 +140,45 @@
       </div>
     </div>
   </div>
+  
+  <!-- Diff Preview Modal -->
+  <Teleport to="body">
+    <div v-if="showDiffPreview" class="diff-modal-overlay" @click="handleRejectDiff">
+      <div class="diff-modal" @click.stop>
+        <div class="diff-modal-header">
+          <h3>Preview de Mudanças</h3>
+          <span class="diff-modal-file">{{ diffPreviewData.fileName }}</span>
+          <button class="diff-modal-close" @click="handleRejectDiff">×</button>
+        </div>
+        <div class="diff-modal-content">
+          <DiffViewer
+            :original-code="diffPreviewData.originalCode"
+            :new-code="diffPreviewData.newCode"
+            :title="diffPreviewData.filePath"
+            :show-accept="false"
+            :show-reject="false"
+            mode="inline"
+            :context-lines="5"
+          />
+        </div>
+        <div class="diff-modal-footer">
+          <button class="diff-btn diff-btn-reject" @click="handleRejectDiff">
+            <span class="icon-xmark"></span> Rejeitar
+          </button>
+          <button class="diff-btn diff-btn-accept" @click="handleAcceptDiff">
+            <span class="icon-check"></span> Aceitar Mudanças
+          </button>
+        </div>
+      </div>
+    </div>
+  </Teleport>
 </template>
 
 <script setup>
 import { ref, nextTick, onMounted, onUnmounted, watch } from 'vue'
 import { marked } from 'marked'
+import DiffViewer from './DiffViewer.vue'
+import { hasChanges } from '../utils/diff.js'
 
 marked.setOptions({
   breaks: true,
@@ -169,6 +203,16 @@ const messagesWrapper = ref(null)
 const inputRef = ref()
 const inputFocused = ref(false)
 let typingMessageIndex = -1
+
+// Diff Preview State
+const showDiffPreview = ref(false)
+const diffPreviewData = ref({
+  originalCode: '',
+  newCode: '',
+  filePath: '',
+  fileName: '',
+  blockId: null
+})
 
 // Tool calls
 const currentToolCalls = ref([])
@@ -245,6 +289,48 @@ const scrollToBottom = () => {
       behavior: 'smooth'
     })
   }
+}
+
+// Funções para o modal de Diff Preview
+const handleAcceptDiff = async () => {
+  try {
+    const { filePath, newCode, fileName } = diffPreviewData.value
+    
+    await window.monarco.ai.executeTool('write_file', {
+      path: filePath,
+      content: newCode
+    })
+    
+    // Atualizar o conteúdo no editor se o arquivo estiver aberto
+    window.monarcoEditor?.updateFileContent?.(filePath, newCode)
+    
+    messages.value.push({
+      role: 'assistant',
+      content: `✅ Applied changes to \`${fileName}\``
+    })
+    
+    showDiffPreview.value = false
+    await nextTick()
+    scrollToBottom()
+  } catch (error) {
+    console.error('Erro ao aplicar código:', error)
+    messages.value.push({
+      role: 'assistant',
+      content: `❌ Erro ao aplicar: ${error.message}`
+    })
+    showDiffPreview.value = false
+    await nextTick()
+    scrollToBottom()
+  }
+}
+
+const handleRejectDiff = () => {
+  showDiffPreview.value = false
+  messages.value.push({
+    role: 'assistant',
+    content: `❎ Mudanças rejeitadas. O arquivo não foi alterado.`
+  })
+  nextTick().then(scrollToBottom)
 }
 
 const sendPrompt = async () => {
@@ -398,7 +484,7 @@ onMounted(() => {
   }
   document.addEventListener('click', handleClickOutside)
   
-  // Apply code handler
+  // Apply code handler - agora mostra diff preview primeiro
   window.applyCodeBlock = async (blockId) => {
     try {
       const blockData = window._codeBlocks?.[blockId]
@@ -497,27 +583,39 @@ O código não especifica o arquivo de destino e nenhum arquivo compatível est�
         .replace(/^<!--\s*File:.*?-->\n?/m, '')
         .trim()
       
-      await window.monarco.ai.executeTool('write_file', {
-        path: filePath,
-        content: code
-      })
+      // Buscar o conteúdo original do arquivo para mostrar diff
+      let originalCode = ''
+      try {
+        originalCode = await window.monarco.readTextFile(filePath) || ''
+      } catch (e) {
+        // Arquivo novo, sem conteúdo original
+        originalCode = ''
+      }
       
-      // Atualizar o conteúdo no editor se o arquivo estiver aberto
-      window.monarcoEditor?.updateFileContent?.(filePath, code)
-      
-      const fileName = filePath.split('/').pop()
-      messages.value.push({
-        role: 'assistant',
-        content: `✅ Applied changes to \`${fileName}\``
-      })
-      
-      await nextTick()
-      scrollToBottom()
+      // Se há mudanças, mostrar preview do diff
+      if (hasChanges(originalCode, code)) {
+        diffPreviewData.value = {
+          originalCode,
+          newCode: code,
+          filePath,
+          fileName: filePath.split('/').pop(),
+          blockId
+        }
+        showDiffPreview.value = true
+      } else {
+        // Sem mudanças, apenas informar
+        messages.value.push({
+          role: 'assistant',
+          content: `ℹ️ O código é idêntico ao arquivo atual. Nenhuma mudança necessária.`
+        })
+        await nextTick()
+        scrollToBottom()
+      }
     } catch (error) {
-      console.error('Erro ao aplicar código:', error)
+      console.error('Erro ao preparar aplicação:', error)
       messages.value.push({
         role: 'assistant',
-        content: `❌ Erro ao aplicar: ${error.message}`
+        content: `❌ Erro ao preparar: ${error.message}`
       })
       await nextTick()
       scrollToBottom()
@@ -589,14 +687,17 @@ watch(() => props.isOpen, (newVal) => {
   display: flex;
   flex-direction: column;
   height: 100%;
+  min-height: 0; /* ESSENCIAL para scroll funcionar em flex */
   background: var(--panel);
   border-left: 1px solid var(--border);
   font-size: 13px;
+  overflow: hidden;
 }
 
 /* Chat Container - Scrollable */
 .chat-container {
   flex: 1;
+  min-height: 0; /* ESSENCIAL para scroll funcionar em flex */
   overflow-y: auto;
   overflow-x: hidden;
   scroll-behavior: smooth;
@@ -1083,5 +1184,137 @@ watch(() => props.isOpen, (newVal) => {
   padding: 0;
   background: transparent;
   border-radius: 0;
+}
+
+/* Diff Preview Modal */
+.diff-modal-overlay {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: rgba(0, 0, 0, 0.6);
+  backdrop-filter: blur(4px);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 10001;
+  animation: fade-in 0.15s ease;
+}
+
+@keyframes fade-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+.diff-modal {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  width: 90vw;
+  max-width: 1000px;
+  max-height: 85vh;
+  display: flex;
+  flex-direction: column;
+  box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.5);
+  animation: slide-up 0.2s ease;
+}
+
+@keyframes slide-up {
+  from {
+    opacity: 0;
+    transform: translateY(20px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.diff-modal-header {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 16px 20px;
+  border-bottom: 1px solid var(--border);
+}
+
+.diff-modal-header h3 {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.diff-modal-file {
+  flex: 1;
+  font-size: 12px;
+  color: var(--muted);
+  font-family: 'Monaco', 'Menlo', monospace;
+}
+
+.diff-modal-close {
+  width: 28px;
+  height: 28px;
+  border: none;
+  background: transparent;
+  color: var(--muted);
+  font-size: 20px;
+  cursor: pointer;
+  border-radius: 4px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: all 0.15s ease;
+}
+
+.diff-modal-close:hover {
+  background: rgba(255, 255, 255, 0.1);
+  color: var(--text);
+}
+
+.diff-modal-content {
+  flex: 1;
+  overflow: auto;
+  padding: 0;
+}
+
+.diff-modal-footer {
+  display: flex;
+  justify-content: flex-end;
+  gap: 12px;
+  padding: 16px 20px;
+  border-top: 1px solid var(--border);
+}
+
+.diff-btn {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 16px;
+  border: none;
+  border-radius: 6px;
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.diff-btn-accept {
+  background: #238636;
+  color: white;
+}
+
+.diff-btn-accept:hover {
+  background: #2ea043;
+}
+
+.diff-btn-reject {
+  background: rgba(255, 255, 255, 0.1);
+  color: var(--text);
+}
+
+.diff-btn-reject:hover {
+  background: rgba(255, 255, 255, 0.15);
 }
 </style>

@@ -1,6 +1,7 @@
 import { app, BrowserWindow, dialog, ipcMain, screen } from 'electron'
 import path from 'node:path'
 import fs from 'node:fs/promises'
+import { existsSync } from 'node:fs'
 import os from 'node:os'
 import { exec } from 'node:child_process'
 import { promisify } from 'node:util'
@@ -10,6 +11,26 @@ import { AIAgent, toolExecutor, toolDefinitions, CHAT_MODES } from './ai/index.j
 const execAsync = promisify(exec)
 
 const isDev = !app.isPackaged
+
+// ===== DEBUG CONFIGURATION =====
+const DEBUG = {
+  enabled: true,
+  level: isDev ? 'verbose' : 'info', // 'error' | 'info' | 'verbose'
+  file: true // Log to file
+}
+
+const log = (level, context, message, data = null) => {
+  const levels = { error: 0, info: 1, verbose: 2 }
+  if (levels[level] > levels[DEBUG.level]) return
+  
+  const timestamp = new Date().toISOString()
+  const prefix = `[${timestamp}] [${level.toUpperCase()}] [${context}]`
+  const output = data ? `${prefix} ${message} ${JSON.stringify(data)}` : `${prefix} ${message}`
+  
+  if (level === 'error') console.error(output)
+  else if (level === 'info') console.log(output)
+  else console.log(output)
+}
 
 let currentWorkspacePath = null
 
@@ -217,9 +238,11 @@ async function buildTree(rootPath) {
 }
 
 function createWindow() {
+  log('info', 'electron:createWindow', '🪟 Criando nova janela')
   const cursorPoint = screen.getCursorScreenPoint()
   const display = screen.getDisplayNearestPoint(cursorPoint)
   const { x: waX, y: waY, width: waW, height: waH } = display.workArea
+  log('verbose', 'electron:createWindow', 'Dimensões da tela', { x: waX, y: waY, w: waW, h: waH })
 
   const desiredWidth = 1530
   const desiredHeight = 760
@@ -228,6 +251,11 @@ function createWindow() {
   const x = waX + Math.round((waW - width) / 2)
   const y = waY + Math.round((waH - height) / 2)
 
+  // Caminho do ícone (SVG convertido para PNG)
+  const iconPath = path.join(app.getAppPath(), 'assets', 'icons', 'icon.png')
+  const iconSvgPath = path.join(app.getAppPath(), 'assets', 'icons', 'icon.svg')
+  log('verbose', 'electron:createWindow', 'Caminho do ícone', { iconPath, existe: existsSync(iconPath) })
+
   const win = new BrowserWindow({
     width,
     height,
@@ -235,19 +263,64 @@ function createWindow() {
     y,
     frame: false,
     backgroundColor: '#0f111a',
+    icon: existsSync(iconPath) ? iconPath : (existsSync(iconSvgPath) ? iconSvgPath : undefined),
     webPreferences: {
       contextIsolation: true,
       nodeIntegration: false,
       preload: path.join(app.getAppPath(), 'electron', 'preload.cjs')
     }
   })
+  log('info', 'electron:createWindow', '✅ BrowserWindow criado')
+
+  // Log quando o arquivo é carregado
+  win.webContents.on('did-start-loading', () => {
+    log('info', 'electron:renderer', '📄 Começando a carregar página')
+  })
+
+  win.webContents.on('did-finish-load', () => {
+    log('info', 'electron:renderer', '✅ Página carregada com sucesso')
+  })
+
+  win.webContents.on('did-fail-load', (evt, code, desc) => {
+    log('error', 'electron:renderer', '❌ Erro ao carregar página', { code, desc })
+  })
+
+  // Capturar erros do console do renderer
+  win.webContents.on('console-message', (level, message, line, sourceId) => {
+    try {
+      const messageStr = String(message || '')
+      const levelStr = ['log', 'warning', 'error'][level] || 'unknown'
+      
+      // Log padrão dos mensagens do console
+      log(levelStr === 'error' ? 'error' : 'verbose', 'renderer:console', messageStr, { line, sourceId })
+    } catch (e) {
+      // Evita erros ao processar console-message
+      console.error('[console-message handler error]', e)
+    }
+  })
 
   if (isDev) {
+    log('info', 'electron:createWindow', '🔗 Modo desenvolvimento: conectando a http://localhost:5175')
     win.loadURL('http://localhost:5175')
+    // Abre DevTools automaticamente em dev
     win.webContents.openDevTools({ mode: 'detach' })
   } else {
-    win.loadFile(path.join(app.getAppPath(), 'dist', 'index.html'))
+    const indexPath = path.join(app.getAppPath(), 'dist', 'index.html')
+    log('info', 'electron:createWindow', '📂 Modo produção: carregando', { indexPath, existe: existsSync(indexPath) })
+    if (!existsSync(indexPath)) {
+      log('error', 'electron:createWindow', '❌ index.html NÃO ENCONTRADO!', { indexPath })
+    }
+    
+    win.loadFile(indexPath)
   }
+
+  // Show window after loading
+  win.once('ready-to-show', () => {
+    log('info', 'electron:createWindow', '🎨 Mostrando janela')
+    win.show()
+  })
+
+  return win
 }
 
 app.whenReady().then(() => {
@@ -278,27 +351,34 @@ app.whenReady().then(() => {
 
   ipcMain.handle('workspace:select', async () => {
     try {
+      log('info', 'ipc:workspace:select', 'Iniciando seleção de workspace')
       const res = await dialog.showOpenDialog({
         title: 'Select workspace folder',
         properties: ['openDirectory']
       })
-      if (res.canceled) return null
+      if (res.canceled) {
+        log('info', 'ipc:workspace:select', 'Seleção cancelada pelo usuário')
+        return null
+      }
       const selected = res.filePaths[0] ?? null
       currentWorkspacePath = selected
+      log('info', 'ipc:workspace:select', 'Workspace selecionado', { path: selected })
       
       // Salva nos recentes
       if (selected) {
         await addRecentWorkspace(selected)
+        log('info', 'ipc:workspace:select', 'Workspace adicionado aos recentes')
         
         // Configura o agente de IA com o workspace
         if (aiAgent) {
           aiAgent.setWorkspace(selected)
+          log('info', 'ipc:workspace:select', 'Workspace configurado no agente de IA')
         }
       }
       
       return selected
     } catch (e) {
-      console.error('workspace:select failed', e)
+      log('error', 'ipc:workspace:select', 'Erro ao selecionar workspace', { error: e.message })
       throw e
     }
   })
@@ -887,12 +967,14 @@ app.whenReady().then(() => {
   // Criar novo terminal
   ipcMain.handle('terminal:create', (evt, options = {}) => {
     try {
+      log('info', 'ipc:terminal:create', 'Criando novo terminal', { cwd: options?.cwd })
       const shell = process.platform === 'win32' ? 'powershell.exe' : (process.env.SHELL || '/bin/bash')
       const cwd = options.cwd || currentWorkspacePath || os.homedir()
       const cols = options.cols || 80
       const rows = options.rows || 24
       
       const terminalId = `term_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`
+      log('verbose', 'ipc:terminal:create', 'Terminal ID gerado', { id: terminalId, shell })
       
       const ptyProcess = pty.spawn(shell, [], {
         name: 'xterm-256color',
@@ -907,6 +989,7 @@ app.whenReady().then(() => {
       })
       
       terminals.set(terminalId, ptyProcess)
+      log('info', 'ipc:terminal:create', 'Terminal criado com sucesso', { id: terminalId, pid: ptyProcess.pid })
       
       // Enviar dados do terminal para o renderer
       ptyProcess.onData((data) => {
@@ -918,6 +1001,7 @@ app.whenReady().then(() => {
       
       // Quando o terminal fechar
       ptyProcess.onExit(({ exitCode }) => {
+        log('info', 'ipc:terminal:create', 'Terminal fechado', { id: terminalId, exitCode })
         terminals.delete(terminalId)
         const win = BrowserWindow.fromWebContents(evt.sender)
         if (win && !win.isDestroyed()) {
@@ -927,7 +1011,7 @@ app.whenReady().then(() => {
       
       return terminalId
     } catch (e) {
-      console.error('terminal:create failed', e)
+      log('error', 'ipc:terminal:create', 'Erro ao criar terminal', { error: e.message })
       throw e
     }
   })
@@ -1017,10 +1101,12 @@ app.whenReady().then(() => {
     }
   })
   
-  // Enviar mensagem para o agente
   ipcMain.handle('ai:chat', async (evt, message, options = {}) => {
     try {
+      log('info', 'ipc:ai:chat', 'Mensagem recebida', { length: message?.length, mode: options?.mode })
+      
       if (!aiAgent) {
+        log('verbose', 'ipc:ai:chat', 'Inicializando agente de IA (primeira vez)')
         // Inicializa com configurações padrão se não existir
         const settings = await loadSettings()
         aiAgent = new AIAgent(settings.ai)
@@ -1032,16 +1118,19 @@ app.whenReady().then(() => {
       
       // Configura callback para notificar tool calls
       aiAgent.onToolCall = (toolInfo) => {
+        log('info', 'ipc:ai:chat', 'Tool call executado', { tool: toolInfo?.name })
         const win = BrowserWindow.fromWebContents(evt.sender)
         if (win && !win.isDestroyed()) {
           evt.sender.send('ai:tool-call', toolInfo)
         }
       }
       
+      log('info', 'ipc:ai:chat', 'Enviando mensagem para IA')
       const result = await aiAgent.chat(message, options)
+      log('info', 'ipc:ai:chat', 'Resposta da IA recebida', { tokens: result?.usage?.total_tokens })
       return result
     } catch (e) {
-      console.error('ai:chat failed', e)
+      log('error', 'ipc:ai:chat', 'Erro no chat com IA', { error: e.message })
       throw e
     }
   })
@@ -1123,6 +1212,78 @@ app.whenReady().then(() => {
       console.error('ai:executeTool failed', e)
       throw e
     }
+  })
+
+  // ===== Autocomplete AI Service =====
+  
+  // Instância do serviço de autocomplete
+  let autocompleteService = null
+  
+  // Inicializar autocomplete com configurações
+  ipcMain.handle('ai:autocomplete:init', async (_evt, settings) => {
+    try {
+      const { AutocompleteService } = await import('./ai/autocomplete.js')
+      autocompleteService = new AutocompleteService(settings)
+      return { success: true }
+    } catch (e) {
+      console.error('ai:autocomplete:init failed', e)
+      throw e
+    }
+  })
+  
+  // Fazer uma completion
+  ipcMain.handle('ai:autocomplete:complete', async (_evt, params) => {
+    try {
+      if (!autocompleteService) {
+        const { AutocompleteService } = await import('./ai/autocomplete.js')
+        const settings = await loadSettings()
+        autocompleteService = new AutocompleteService({
+          endpoint: settings.ai?.endpoint?.replace('/chat/completions', '/completions') || 'http://192.168.1.18:8000/v1/completions',
+          model: settings.ai?.model || 'Qwen/Qwen2.5-Coder-3B-Instruct',
+          temperature: settings.ai?.temperature ?? 0.1,
+          maxTokens: 128,
+          enabled: settings.ai?.autocomplete?.enabled ?? true
+        })
+      }
+      
+      const result = await autocompleteService.complete(params)
+      return result
+    } catch (e) {
+      console.error('ai:autocomplete:complete failed', e)
+      throw e
+    }
+  })
+  
+  // Atualizar configurações do autocomplete
+  ipcMain.handle('ai:autocomplete:updateSettings', async (_evt, settings) => {
+    if (autocompleteService) {
+      autocompleteService.updateSettings(settings)
+    }
+    return { success: true }
+  })
+  
+  // Ativar/desativar autocomplete
+  ipcMain.handle('ai:autocomplete:setEnabled', async (_evt, enabled) => {
+    if (autocompleteService) {
+      autocompleteService.updateSettings({ enabled })
+    }
+    return { success: true }
+  })
+  
+  // Limpar cache do autocomplete
+  ipcMain.handle('ai:autocomplete:clearCache', async () => {
+    if (autocompleteService) {
+      autocompleteService.clearCache()
+    }
+    return { success: true }
+  })
+  
+  // Abortar requests pendentes
+  ipcMain.handle('ai:autocomplete:abort', async () => {
+    if (autocompleteService) {
+      autocompleteService.abort()
+    }
+    return { success: true }
   })
   
   // Atualiza workspace no agente quando selecionar nova pasta

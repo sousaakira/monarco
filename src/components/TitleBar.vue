@@ -19,6 +19,16 @@
         </button>
       </div>
       
+      <!-- Logo do Monarco -->
+      <div class="monarco-logo" title="Monarco IDE">
+        <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <!-- M de Monarco - estilo monárquico/coroa -->
+          <path d="M3 6 L6 3 L9 6 L12 3 L15 6 L18 3 L21 6 L21 18 Q21 21 18 21 L6 21 Q3 21 3 18 Z" />
+          <!-- Detalhe: círculo/joia no topo -->
+          <circle cx="12" cy="4" r="1.5" fill="currentColor" />
+        </svg>
+      </div>
+      
       <!-- Menus do Sistema -->
       <nav class="menubar" @mouseleave="handleMenubarLeave">
         <div 
@@ -300,6 +310,31 @@ onUnmounted(() => {
   app-region: no-drag;
   position: relative;
   z-index: 1000;
+}
+
+.monarco-logo {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  margin-left: 8px;
+  color: var(--accent);
+  cursor: pointer;
+  border-radius: 4px;
+  transition: all 0.2s ease;
+  -webkit-app-region: no-drag;
+  app-region: no-drag;
+}
+
+.monarco-logo:hover {
+  background: rgba(0, 122, 204, 0.15);
+  color: #3fb950;
+}
+
+.monarco-logo svg {
+  width: 18px;
+  height: 18px;
 }
 
 .menu-item {

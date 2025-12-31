@@ -18,6 +18,18 @@
     </div>
     
     <div class="status-right">
+      <!-- Indicador de Autocomplete IA -->
+      <button 
+        class="statusbar-btn" 
+        :class="{ 'autocomplete-active': autocompleteEnabled, 'autocomplete-loading': autocompleteLoading }"
+        @click="$emit('toggleAutocomplete')" 
+        :title="autocompleteEnabled ? 'AI Autocomplete: Ativo (clique para desativar)' : 'AI Autocomplete: Desativado (clique para ativar)'"
+      >
+        <span v-if="autocompleteLoading" class="spinner-icon"></span>
+        <span v-else class="icon-wand-magic-sparkles"></span>
+        <span>{{ autocompleteEnabled ? 'AI' : 'AI Off' }}</span>
+      </button>
+      
       <button 
         class="statusbar-btn" 
         @click="$emit('activateEyedropper')" 
@@ -55,10 +67,18 @@ defineProps({
   pickedColor: {
     type: String,
     default: null
+  },
+  autocompleteEnabled: {
+    type: Boolean,
+    default: true
+  },
+  autocompleteLoading: {
+    type: Boolean,
+    default: false
   }
 })
 
-defineEmits(['activateEyedropper', 'toggleColorPalette', 'copyColor', 'clearPickedColor'])
+defineEmits(['activateEyedropper', 'toggleColorPalette', 'copyColor', 'clearPickedColor', 'toggleAutocomplete'])
 </script>
 
 <style scoped>
@@ -138,5 +158,31 @@ defineEmits(['activateEyedropper', 'toggleColorPalette', 'copyColor', 'clearPick
 
 .picked-color-close:hover {
   background: rgba(255, 255, 255, 0.35);
+}
+
+/* Autocomplete button states */
+.autocomplete-active {
+  background: rgba(100, 255, 150, 0.2) !important;
+}
+
+.autocomplete-active:hover {
+  background: rgba(100, 255, 150, 0.3) !important;
+}
+
+.autocomplete-loading {
+  background: rgba(255, 200, 100, 0.2) !important;
+}
+
+.spinner-icon {
+  width: 12px;
+  height: 12px;
+  border: 2px solid rgba(255, 255, 255, 0.3);
+  border-top-color: #fff;
+  border-radius: 50%;
+  animation: spin 0.8s linear infinite;
+}
+
+@keyframes spin {
+  to { transform: rotate(360deg); }
 }
 </style>

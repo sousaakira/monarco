@@ -201,7 +201,23 @@ button:hover {
   min-width: 300px;
   max-width: 800px;
   height: 100%;
+  display: flex;
+  flex-direction: column;
   overflow: hidden;
+}
+
+.ai-chat-integrated .void-chat-panel {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.ai-chat-integrated .chat-container {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
 }
 
 .sidebarHeader {
@@ -308,8 +324,7 @@ button:hover {
 }
 
 .main {
-  display: flex;
-  flex-direction: column;
+  display: grid;
   min-width: 0;
   overflow: hidden;
   padding-bottom: 22px; /* Space for fixed statusbar */
@@ -391,6 +406,22 @@ button:hover {
   min-height: 0;
   background: var(--mono-bg);
   overflow: hidden;
+}
+
+.suggest-widget .monaco-list {
+  overflow: visible !important;
+}
+
+.monaco-editor-container {
+  width: 100%;
+  height: 100%;
+}
+
+/* Garante que o container do texto fica visível */
+.suggest-widget .monaco-list .monaco-list-row .monaco-highlighted-label {
+  min-width: 250px !important;
+  overflow: visible !important;
+  margin-left: 10px !important;
 }
 
 /* Editor + Terminal Container */
@@ -1137,7 +1168,7 @@ button:hover {
 }
 
 .git-commit-hash {
-  font-family: 'Courier New', monospace;
+  font-family: monospace;
   font-size: 11px;
   color: var(--accent);
   font-weight: 600;
@@ -1173,7 +1204,7 @@ button:hover {
 /* Diff Viewer Styles */
 .diff-viewer {
   background: var(--bg);
-  font-family: 'Courier New', monospace;
+  font-family: monospace;
   font-size: 12px;
   line-height: 1.4;
 }
@@ -1254,7 +1285,7 @@ button:hover {
 .npm-script-command {
   font-size: 11px;
   color: var(--muted);
-  font-family: 'Courier New', monospace;
+  font-family: monospace;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -1471,7 +1502,7 @@ button:hover {
 }
 
 .ctrlk-preview-code {
-  font-family: 'Fira Code', 'Consolas', 'Monaco', monospace;
+  font-family: monospace;
   font-size: 12px;
   line-height: 1.5;
   color: var(--text);
@@ -1483,4 +1514,614 @@ button:hover {
   overflow-y: auto;
   white-space: pre-wrap;
   word-break: break-all;
+}
+
+/* Ctrl+K Expanded Mode */
+.ctrlk-expanded {
+  width: 700px !important;
+  max-width: 95vw !important;
+}
+
+/* Ctrl+K Sugestões */
+.ctrlk-suggestions {
+  padding: 12px 16px;
+  border-top: 1px solid var(--border-alpha);
+}
+
+.ctrlk-suggestions-label {
+  font-size: 11px;
+  color: var(--muted);
+  margin-bottom: 8px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.ctrlk-suggestions-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.ctrlk-suggestion {
+  padding: 6px 12px;
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid var(--border-alpha);
+  border-radius: 16px;
+  color: var(--text);
+  font-size: 12px;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.ctrlk-suggestion:hover {
+  background: rgba(255, 255, 255, 0.1);
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+/* Ctrl+K Diff Preview */
+.ctrlk-diff-preview {
+  padding: 0;
+}
+
+.ctrlk-diff-header {
+  padding: 12px 16px;
+  background: var(--sidebar);
+  border-bottom: 1px solid var(--border);
+}
+
+.ctrlk-diff-instruction {
+  font-style: italic;
+  color: var(--accent);
+  font-size: 13px;
+}
+
+.ctrlk-diff-content {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  max-height: 300px;
+  overflow: auto;
+}
+
+.ctrlk-diff-side {
+  padding: 0;
+  overflow: auto;
+}
+
+.ctrlk-diff-side pre {
+  margin: 0;
+  padding: 12px;
+  font-family: 'Fira Code', 'Consolas', 'Monaco', monospace;
+  font-size: 12px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+
+.ctrlk-diff-side-label {
+  padding: 6px 12px;
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  border-bottom: 1px solid var(--border);
+}
+
+.ctrlk-diff-original {
+  background: rgba(248, 81, 73, 0.05);
+  border-right: 1px solid var(--border);
+}
+
+.ctrlk-diff-original .ctrlk-diff-side-label {
+  background: rgba(248, 81, 73, 0.1);
+  color: #f85149;
+}
+
+.ctrlk-diff-new {
+  background: rgba(46, 160, 67, 0.05);
+}
+
+.ctrlk-diff-new .ctrlk-diff-side-label {
+  background: rgba(46, 160, 67, 0.1);
+  color: #3fb950;
+}
+
+/* Ctrl+K Ações */
+.ctrlk-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 12px;
+  padding: 12px 16px;
+  border-top: 1px solid var(--border);
+  background: var(--sidebar);
+}
+
+.ctrlk-action-btn {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 16px;
+  border: none;
+  border-radius: 6px;
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.ctrlk-accept {
+  background: #238636;
+  color: white;
+}
+
+.ctrlk-accept:hover {
+  background: #2ea043;
+}
+
+.ctrlk-reject {
+  background: rgba(255, 255, 255, 0.1);
+  color: var(--text);
+}
+
+.ctrlk-reject:hover {
+  background: rgba(255, 255, 255, 0.15);
+}
+
+/* ========================================
+   CTRL+K - Inline Widget Mode
+   ======================================== */
+
+/* Overlay transparente para modo inline */
+.ctrlk-overlay-inline {
+  background: transparent;
+  backdrop-filter: none;
+}
+
+/* Widget inline flutuante */
+.ctrlk-inline-widget {
+  width: 380px;
+  border-radius: 10px;
+  box-shadow: 
+    0 4px 20px rgba(0, 0, 0, 0.4),
+    0 0 0 1px rgba(255, 255, 255, 0.1);
+  animation: ctrlk-widget-appear 0.15s ease;
+}
+
+@keyframes ctrlk-widget-appear {
+  from {
+    opacity: 0;
+    transform: translateY(-4px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.ctrlk-inline-widget .ctrlk-header {
+  padding: 8px 12px;
+  background: rgba(0, 122, 204, 0.15);
+}
+
+.ctrlk-inline-widget .ctrlk-icon {
+  width: 20px;
+  height: 20px;
+  font-size: 12px;
+  background: transparent;
+}
+
+.ctrlk-inline-widget .ctrlk-title {
+  font-size: 12px;
+}
+
+.ctrlk-inline-widget .ctrlk-hint {
+  font-size: 10px;
+}
+
+.ctrlk-close {
+  width: 20px;
+  height: 20px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: transparent;
+  border: none;
+  border-radius: 4px;
+  color: var(--muted);
+  font-size: 16px;
+  cursor: pointer;
+  transition: all 0.15s ease;
+  margin-left: auto;
+}
+
+.ctrlk-close:hover {
+  background: rgba(255, 255, 255, 0.1);
+  color: var(--text);
+}
+
+.ctrlk-inline-widget .ctrlk-input-area {
+  padding: 8px 12px;
+}
+
+.ctrlk-inline-widget .ctrlk-input {
+  padding: 8px 12px;
+  font-size: 13px;
+  border-radius: 6px;
+}
+
+.ctrlk-inline-widget .ctrlk-submit {
+  width: 32px;
+  height: 32px;
+  border-radius: 6px;
+  font-size: 14px;
+}
+
+.ctrlk-inline-widget .ctrlk-suggestions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 8px 12px;
+  border-top: 1px solid var(--border-alpha);
+}
+
+.ctrlk-inline-widget .ctrlk-suggestion {
+  padding: 4px 10px;
+  font-size: 11px;
+  border-radius: 12px;
+}
+
+/* Seleção info compacta */
+.ctrlk-selection-info {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 12px;
+  font-size: 11px;
+  color: var(--muted);
+  background: rgba(0, 0, 0, 0.1);
+  border-top: 1px solid var(--border-alpha);
+}
+
+/* Inline widget expanded (preview mode) */
+.ctrlk-inline-widget.ctrlk-expanded {
+  width: 600px !important;
+  max-width: calc(100vw - 40px) !important;
+}
+
+.ctrlk-inline-widget .ctrlk-diff-content {
+  max-height: 250px;
+}
+
+.ctrlk-inline-widget .ctrlk-actions {
+  padding: 8px 12px;
+}
+
+.ctrlk-inline-widget .ctrlk-action-btn {
+  padding: 6px 12px;
+  font-size: 12px;
+}
+
+/* ========================================
+   INLINE DIFF DECORATIONS NO MONACO
+   ======================================== */
+
+/* Linha removida (código original que será substituído) */
+.diff-line-removed {
+  background: rgba(248, 81, 73, 0.2) !important;
+  text-decoration: line-through !important;
+  text-decoration-color: rgba(248, 81, 73, 0.7) !important;
+}
+
+/* Glyph de menos na gutter */
+.diff-glyph-minus {
+  background: #f85149;
+  margin-left: 5px;
+  width: 14px !important;
+  height: 14px !important;
+  border-radius: 2px;
+}
+
+.diff-glyph-minus::before {
+  content: '−';
+  color: white;
+  font-weight: bold;
+  font-size: 12px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  height: 100%;
+}
+
+/* ========================================
+   VIEW ZONE DO DIFF (Código Novo)
+   ======================================== */
+
+.diff-view-zone-container {
+  background: rgba(46, 160, 67, 0.08);
+  border-left: 3px solid #3fb950;
+  font-family: monospace;
+  font-size: 13px;
+  overflow: hidden;
+  pointer-events: auto !important;
+}
+
+.diff-zone-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 12px;
+  background: rgba(46, 160, 67, 0.15);
+  border-bottom: 1px solid rgba(46, 160, 67, 0.3);
+  pointer-events: auto !important;
+}
+
+.diff-zone-label {
+  font-size: 12px;
+  font-weight: 500;
+  color: #3fb950;
+}
+
+.diff-zone-actions {
+  display: flex;
+  gap: 8px;
+  pointer-events: auto !important;
+}
+
+.diff-zone-btn {
+  padding: 4px 12px;
+  border: none;
+  border-radius: 4px;
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.15s ease;
+  pointer-events: auto !important;
+  user-select: none;
+  z-index: 100;
+}
+
+.diff-zone-accept {
+  background: #238636;
+  color: white;
+}
+
+.diff-zone-accept:hover {
+  background: #2ea043;
+  transform: scale(1.02);
+}
+
+.diff-zone-reject {
+  background: rgba(248, 81, 73, 0.2);
+  color: #f85149;
+  border: 1px solid rgba(248, 81, 73, 0.3);
+}
+
+.diff-zone-reject:hover {
+  background: rgba(248, 81, 73, 0.3);
+  transform: scale(1.02);
+}
+
+.diff-zone-code {
+  padding: 0;
+}
+
+.diff-zone-line {
+  display: flex;
+  align-items: center;
+  padding: 0 12px;
+  min-height: 20px;
+  line-height: 20px;
+}
+
+.diff-zone-line:hover {
+  background: rgba(46, 160, 67, 0.1);
+}
+
+.diff-zone-line-num {
+  width: 40px;
+  text-align: right;
+  padding-right: 12px;
+  color: rgba(255, 255, 255, 0.3);
+  font-size: 12px;
+  user-select: none;
+}
+
+.diff-zone-plus {
+  width: 20px;
+  color: #3fb950;
+  font-weight: bold;
+  font-size: 14px;
+}
+
+.diff-zone-line-content {
+  flex: 1;
+  color: var(--text);
+  white-space: pre;
+}
+
+/* Widget flutuante de accept/reject */
+.inline-diff-actions {
+  position: fixed;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.3);
+  z-index: 10000;
+  animation: diff-actions-appear 0.15s ease;
+}
+
+@keyframes diff-actions-appear {
+  from {
+    opacity: 0;
+    transform: translateY(-4px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.inline-diff-actions .diff-action-label {
+  font-size: 11px;
+  color: var(--muted);
+  margin-right: 4px;
+}
+
+.inline-diff-actions button {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 10px;
+  border: none;
+  border-radius: 4px;
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.inline-diff-actions .diff-accept {
+  background: #238636;
+  color: white;
+}
+
+.inline-diff-actions .diff-accept:hover {
+  background: #2ea043;
+}
+
+.inline-diff-actions .diff-reject {
+  background: rgba(255, 255, 255, 0.08);
+  color: var(--text);
+}
+
+.inline-diff-actions .diff-reject:hover {
+  background: rgba(255, 255, 255, 0.12);
+}
+
+/* Preview inline do novo código */
+.diff-inline-preview {
+  position: fixed;
+  background: var(--panel);
+  border: 1px solid var(--accent);
+  border-radius: 8px;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.4);
+  overflow: hidden;
+  z-index: 9999;
+  max-width: 500px;
+  animation: diff-preview-appear 0.2s ease;
+}
+
+@keyframes diff-preview-appear {
+  from {
+    opacity: 0;
+    transform: scale(0.95);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+.diff-inline-preview .preview-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  background: rgba(0, 122, 204, 0.15);
+  border-bottom: 1px solid var(--border);
+  font-size: 12px;
+  color: var(--accent);
+}
+
+.diff-inline-preview .preview-content {
+  max-height: 200px;
+  overflow: auto;
+}
+
+.diff-inline-preview .preview-content pre {
+  margin: 0;
+  padding: 12px;
+  font-family: monospace;
+  font-size: 12px;
+  line-height: 1.5;
+  background: rgba(46, 160, 67, 0.05);
+  color: var(--text);
+  white-space: pre-wrap;
+}
+
+/* ========================================
+   ICON BUTTONS - Visibilidade de Ícones
+   ======================================== */
+
+/* Botão para enviar (cor branca visível) */
+.send-btn[data-v-b5cec2d5] {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  background: rgba(255, 255, 255, 0.1);
+  border: none;
+  border-radius: 6px;
+  color: #ffffff !important;
+  cursor: pointer;
+  transition: all 0.1s ease;
+}
+
+.send-btn[data-v-b5cec2d5] svg {
+  width: 22px !important;
+  height: 22px !important;
+  stroke-width: 1.5px !important;
+  min-width: 22px !important;
+  min-height: 22px !important;
+  max-width: 22px !important;
+  max-height: 22px !important;
+  flex-shrink: 0 !important;
+}
+
+.send-btn[data-v-b5cec2d5]:hover:not(:disabled) {
+  background: rgba(255, 255, 255, 0.15);
+  color: #ffffff !important;
+}
+
+.send-btn[data-v-b5cec2d5]:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+  color: #ffffff !important;
+}
+
+/* Botão de ícone comum (branco para visibilidade) */
+.icon-btn[data-v-b5cec2d5] {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  background: transparent;
+  border: none;
+  border-radius: 6px;
+  color: #ffffff !important;
+  cursor: pointer;
+  transition: all 0.1s ease;
+}
+
+.icon-btn[data-v-b5cec2d5] svg {
+  width: 22px !important;
+  height: 22px !important;
+  stroke-width: 1.5px !important;
+  min-width: 22px !important;
+  min-height: 22px !important;
+  max-width: 22px !important;
+  max-height: 22px !important;
+  flex-shrink: 0 !important;
+}
+
+.icon-btn[data-v-b5cec2d5]:hover {
+  background: rgba(255, 255, 255, 0.06);
+  color: #ffffff !important;
 }

@@ -1,6 +1,6 @@
 <script setup>
 import { computed, onMounted, onUnmounted, ref, watch, nextTick } from 'vue'
-import MonacoEditor from 'monaco-editor-vue3'
+// import MonacoEditor from 'monaco-editor-vue3' // DESABILITADO - vamos usar direto
 import * as monaco from 'monaco-editor'
 import FileTree from './components/FileTree.vue'
 import AIChat from './components/AIChat.vue'
@@ -19,188 +19,26 @@ import CommandPalette from './components/CommandPalette.vue'
 
 // Monaco Editor instance
 const monacoEditorRef = ref(null)
+const monacoContainer = ref(null)
 let monacoInstance = null
 let resizeObserver = null
+let autocompleteProviderDisposable = null
 
-function handleEditorMount(editor) {
-  monacoInstance = editor
-  
-  // Registra atalhos personalizados
-  registerEditorShortcuts(editor)
-  
-  // Faz layout inicial após montar
-  setTimeout(() => {
-    if (monacoInstance) {
-      monacoInstance.layout()
-    }
-  }, 100)
-}
+// Autocomplete state
+const autocompleteEnabled = ref(false) // Desabilitado por padrão - habilitar apenas com servidor IA local
+const isAutocompleteLoading = ref(false)
+let autocompleteAbortController = null
 
-function registerEditorShortcuts(editor) {
-  // Usa o Monaco importado diretamente
-  const { KeyMod, KeyCode } = monaco
-
-  // Ctrl+D - Duplicar linha
-  editor.addAction({
-    id: 'duplicate-line',
-    label: 'Duplicate Line',
-    keybindings: [
-      KeyMod.CtrlCmd | KeyCode.KeyD
-    ],
-    run: (ed) => {
-      ed.trigger('keyboard', 'editor.action.copyLinesDownAction', null)
-    }
-  })
-  
-  // Ctrl+/ - Comentar/Descomentar
-  editor.addAction({
-    id: 'toggle-comment',
-    label: 'Toggle Line Comment',
-    keybindings: [
-      KeyMod.CtrlCmd | KeyCode.Slash
-    ],
-    run: (ed) => {
-      ed.trigger('keyboard', 'editor.action.commentLine', null)
-    }
-  })
-  
-  // Alt+↑ - Mover linha para cima
-  editor.addAction({
-    id: 'move-line-up',
-    label: 'Move Line Up',
-    keybindings: [
-      KeyMod.Alt | KeyCode.UpArrow
-    ],
-    run: (ed) => {
-      ed.trigger('keyboard', 'editor.action.moveLinesUpAction', null)
-    }
-  })
-  
-  // Alt+↓ - Mover linha para baixo
-  editor.addAction({
-    id: 'move-line-down',
-    label: 'Move Line Down',
-    keybindings: [
-      KeyMod.Alt | KeyCode.DownArrow
-    ],
-    run: (ed) => {
-      ed.trigger('keyboard', 'editor.action.moveLinesDownAction', null)
-    }
-  })
-  
-  // Ctrl+Shift+K - Deletar linha
-  editor.addAction({
-    id: 'delete-line',
-    label: 'Delete Line',
-    keybindings: [
-      KeyMod.CtrlCmd | KeyMod.Shift | KeyCode.KeyK
-    ],
-    run: (ed) => {
-      ed.trigger('keyboard', 'editor.action.deleteLines', null)
-    }
-  })
-  
-  // Ctrl+Shift+D - Duplicar seleção
-  editor.addAction({
-    id: 'duplicate-selection',
-    label: 'Duplicate Selection',
-    keybindings: [
-      KeyMod.CtrlCmd | KeyMod.Shift | KeyCode.KeyD
-    ],
-    run: (ed) => {
-      const selection = ed.getSelection()
-      const text = ed.getModel().getValueInRange(selection)
-      ed.executeEdits('', [{
-        range: selection,
-        text: text + text
-      }])
-    }
-  })
-  
-  // Ctrl+] - Indent
-  editor.addAction({
-    id: 'indent-line',
-    label: 'Indent Line',
-    keybindings: [
-      KeyMod.CtrlCmd | KeyCode.BracketRight
-    ],
-    run: (ed) => {
-      ed.trigger('keyboard', 'editor.action.indentLines', null)
-    }
-  })
-  
-  // Ctrl+[ - Outdent
-  editor.addAction({
-    id: 'outdent-line',
-    label: 'Outdent Line',
-    keybindings: [
-      KeyMod.CtrlCmd | KeyCode.BracketLeft
-    ],
-    run: (ed) => {
-      ed.trigger('keyboard', 'editor.action.outdentLines', null)
-    }
-  })
-  
-  // Ctrl+Shift+F - Format document
-  editor.addAction({
-    id: 'format-document',
-    label: 'Format Document',
-    keybindings: [
-      KeyMod.CtrlCmd | KeyMod.Shift | KeyCode.KeyF
-    ],
-    run: (ed) => {
-      ed.trigger('keyboard', 'editor.action.formatDocument', null)
-    }
-  })
-  
-  // Ctrl+K - Edição inline com IA
-  editor.addAction({
-    id: 'ai-inline-edit',
-    label: 'AI: Edit Selection (Ctrl+K)',
-    keybindings: [
-      KeyMod.CtrlCmd | KeyCode.KeyK
-    ],
-    run: (ed) => {
-      // Emitir evento para abrir o popup de edição inline
-      const selection = ed.getSelection()
-      const model = ed.getModel()
-      
-      if (!model) return
-      
-      // Se não tem seleção, seleciona a linha atual
-      let range = selection
-      if (selection.isEmpty()) {
-        const lineNumber = selection.startLineNumber
-        range = {
-          startLineNumber: lineNumber,
-          startColumn: 1,
-          endLineNumber: lineNumber,
-          endColumn: model.getLineMaxColumn(lineNumber)
-        }
-        ed.setSelection(range)
-      }
-      
-      const selectedText = model.getValueInRange(range)
-      const position = ed.getPosition()
-      
-      // Notificar a UI para mostrar o popup
-      window.dispatchEvent(new CustomEvent('monarco:ctrlk', {
-        detail: {
-          selection: range,
-          text: selectedText,
-          position: position,
-          filePath: window.monarcoEditor?.getCurrentFile?.() || ''
-        }
-      }))
-    }
-  })
-}
+// NOTA: handleEditorMount e funções relacionadas movidas para depois das declarações de variáveis
+// para evitar erro "Cannot access before initialization"
+// Veja as funções após activeTab/activePath (linha ~2050)
 
 function layoutMonaco() {
   if (monacoInstance) {
     monacoInstance.layout()
   }
 }
+
 
 // Sidebar resize
 const sidebarWidth = ref(280)
@@ -271,6 +109,363 @@ const ctrlKText = ref('')
 const ctrlKPosition = ref(null)
 const ctrlKFilePath = ref('')
 const ctrlKInputRef = ref(null)
+const ctrlKPreviewCode = ref('')  // Código gerado pela IA para preview
+const ctrlKShowPreview = ref(false)  // Mostrar preview antes de aplicar
+const ctrlKWidgetPosition = ref({ top: 0, left: 0 })  // Posição do widget inline
+const ctrlKInlineMode = ref(true)  // Se true, mostra widget inline; se false, mostra modal
+let ctrlKContentWidget = null  // Referência ao content widget do Monaco
+
+// Sugestões de prompts comuns para Ctrl+K
+const ctrlKSuggestions = [
+  'Adicione tratamento de erros',
+  'Adicione comentários explicativos',
+  'Refatore para melhor legibilidade',
+  'Converta para async/await',
+  'Adicione tipos TypeScript',
+  'Otimize performance',
+  'Adicione logs de debug',
+  'Simplifique este código'
+]
+
+// ========================================
+// CHECKPOINT/UNDO SYSTEM
+// ========================================
+// Salva o estado antes de edições da IA para permitir undo
+const fileCheckpoints = ref(new Map()) // Map<filePath, { content: string, timestamp: Date }>
+const maxCheckpoints = 10 // Máximo de checkpoints por arquivo
+
+function saveCheckpoint(filePath, content) {
+  if (!filePath || !content) return
+  
+  let checkpoints = fileCheckpoints.value.get(filePath) || []
+  
+  // Adiciona novo checkpoint
+  checkpoints.push({
+    content,
+    timestamp: new Date(),
+    description: 'Before AI edit'
+  })
+  
+  // Limita o número de checkpoints
+  if (checkpoints.length > maxCheckpoints) {
+    checkpoints = checkpoints.slice(-maxCheckpoints)
+  }
+  
+  fileCheckpoints.value.set(filePath, checkpoints)
+}
+
+function undoLastChange(filePath) {
+  const checkpoints = fileCheckpoints.value.get(filePath)
+  if (!checkpoints || checkpoints.length === 0) {
+    window.monarcoToast?.warning('Nenhum checkpoint disponível para este arquivo')
+    return false
+  }
+  
+  const lastCheckpoint = checkpoints.pop()
+  fileCheckpoints.value.set(filePath, checkpoints)
+  
+  // Restaura o conteúdo
+  const tab = tabs.value.find(t => t.path === filePath)
+  if (tab) {
+    tab.value = lastCheckpoint.content
+    tab.dirty = true
+    
+    if (activePath.value === filePath && monacoInstance) {
+      const position = monacoInstance.getPosition()
+      monacoInstance.setValue(lastCheckpoint.content)
+      if (position) {
+        monacoInstance.setPosition(position)
+      }
+    }
+    
+    window.monarcoToast?.success('Checkpoint restaurado!')
+    return true
+  }
+  
+  return false
+}
+
+// Expor função de undo globalmente
+window.monarcoUndo = undoLastChange
+
+// ========================================
+// LINT ERRORS DETECTION
+// ========================================
+// Detecta erros após edições da IA
+
+async function checkForLintErrors(filePath) {
+  if (!monacoInstance) return []
+  
+  const model = monacoInstance.getModel()
+  if (!model) return []
+  
+  // Aguarda um pouco para o Monaco processar
+  await new Promise(resolve => setTimeout(resolve, 500))
+  
+  // Obtém os marcadores (erros/warnings) do Monaco
+  const markers = monaco.editor.getModelMarkers({ resource: model.uri })
+  
+  // Filtra apenas erros (não warnings)
+  const errors = markers.filter(m => m.severity === monaco.MarkerSeverity.Error)
+  
+  return errors.map(e => ({
+    line: e.startLineNumber,
+    column: e.startColumn,
+    message: e.message,
+    source: e.source || 'lint'
+  }))
+}
+
+function formatLintErrors(errors) {
+  if (!errors || errors.length === 0) return ''
+  
+  return errors.map(e => 
+    `• Linha ${e.line}: ${e.message}`
+  ).join('\n')
+}
+
+// ========================================
+// INLINE DIFF PREVIEW NO EDITOR (Estilo Cursor)
+// ========================================
+// Mostra diff diretamente no editor com código antigo riscado e novo em verde
+let diffDecorations = []  // Decorations atuais de diff
+let diffViewZoneId = null  // ID da view zone com o novo código
+let diffWidgetId = null  // ID do content widget com botões
+const showInlineDiff = ref(false)  // Se está mostrando diff inline
+const inlineDiffData = ref({  // Dados do diff inline
+  originalCode: '',
+  newCode: '',
+  selection: null,
+  filePath: ''
+})
+
+// Mostra preview do diff diretamente no Monaco (estilo Cursor)
+function showDiffInEditor(selection, originalCode, newCode) {
+  if (!monacoInstance) return
+  
+  const model = monacoInstance.getModel()
+  if (!model) return
+  
+  // Limpa diff anterior se existir
+  clearDiffDecorations()
+  
+  // Salva dados do diff
+  inlineDiffData.value = {
+    originalCode,
+    newCode,
+    selection,
+    filePath: activePath.value
+  }
+  
+  const decorations = []
+  
+  // 1. Marca o código original com fundo vermelho e texto riscado
+  for (let i = selection.startLineNumber; i <= selection.endLineNumber; i++) {
+    decorations.push({
+      range: new monaco.Range(i, 1, i, model.getLineMaxColumn(i)),
+      options: {
+        isWholeLine: true,
+        className: 'diff-line-removed',
+        glyphMarginClassName: 'diff-glyph-minus',
+        overviewRuler: {
+          color: 'rgba(248, 81, 73, 0.6)',
+          position: monaco.editor.OverviewRulerLane.Left
+        }
+      }
+    })
+  }
+  
+  // Aplica decorations do código removido
+  diffDecorations = monacoInstance.deltaDecorations(diffDecorations, decorations)
+  
+  // 2. Adiciona View Zone com o novo código (abaixo da seleção)
+  const newLines = newCode.split('\n')
+  const lineHeight = monacoInstance.getOption(monaco.editor.EditorOption.lineHeight)
+  
+  // Expor funções globalmente ANTES de criar os botões
+  window.monarcoAcceptDiff = () => acceptInlineDiff()
+  window.monarcoRejectDiff = () => rejectInlineDiff()
+  
+  monacoInstance.changeViewZones((accessor) => {
+    // Cria o DOM element para a view zone
+    const domNode = document.createElement('div')
+    domNode.className = 'diff-view-zone-container'
+    domNode.style.cssText = 'width: 100%; background: rgba(46, 160, 67, 0.1); border-left: 3px solid #3fb950;'
+    
+    // Header com botões de ação
+    const headerDiv = document.createElement('div')
+    headerDiv.className = 'diff-zone-header'
+    headerDiv.style.cssText = 'display: flex; align-items: center; justify-content: space-between; padding: 8px 12px; background: rgba(46, 160, 67, 0.2); border-bottom: 1px solid rgba(46, 160, 67, 0.3);'
+    
+    const labelSpan = document.createElement('span')
+    labelSpan.className = 'diff-zone-label'
+    labelSpan.style.cssText = 'font-size: 12px; font-weight: 600; color: #3fb950;'
+    labelSpan.textContent = '✨ Código sugerido pela IA'
+    headerDiv.appendChild(labelSpan)
+    
+    const actionsDiv = document.createElement('div')
+    actionsDiv.className = 'diff-zone-actions'
+    actionsDiv.style.cssText = 'display: flex; gap: 8px;'
+    
+    // Botão Rejeitar
+    const rejectBtn = document.createElement('button')
+    rejectBtn.className = 'diff-zone-btn diff-zone-reject'
+    rejectBtn.style.cssText = 'padding: 6px 14px; border: 1px solid rgba(248, 81, 73, 0.4); border-radius: 4px; background: rgba(248, 81, 73, 0.15); color: #f85149; font-size: 12px; font-weight: 500; cursor: pointer;'
+    rejectBtn.textContent = '✕ Rejeitar (Esc)'
+    rejectBtn.addEventListener('click', (e) => {
+      e.preventDefault()
+      e.stopPropagation()
+      rejectInlineDiff()
+    })
+    actionsDiv.appendChild(rejectBtn)
+    
+    // Botão Aceitar
+    const acceptBtn = document.createElement('button')
+    acceptBtn.className = 'diff-zone-btn diff-zone-accept'
+    acceptBtn.style.cssText = 'padding: 6px 14px; border: none; border-radius: 4px; background: #238636; color: white; font-size: 12px; font-weight: 500; cursor: pointer;'
+    acceptBtn.textContent = '✓ Aceitar (Enter)'
+    acceptBtn.addEventListener('click', (e) => {
+      e.preventDefault()
+      e.stopPropagation()
+      acceptInlineDiff()
+    })
+    actionsDiv.appendChild(acceptBtn)
+    
+    headerDiv.appendChild(actionsDiv)
+    domNode.appendChild(headerDiv)
+    
+    // Container do código
+    const codeDiv = document.createElement('div')
+    codeDiv.className = 'diff-zone-code'
+    codeDiv.style.cssText = 'font-family: monospace; font-size: 13px; line-height: 20px;'
+    
+    // Renderiza cada linha com número
+    newLines.forEach((line, idx) => {
+      const lineDiv = document.createElement('div')
+      lineDiv.className = 'diff-zone-line'
+      lineDiv.style.cssText = 'display: flex; align-items: center; padding: 0 12px; min-height: 20px;'
+      
+      const lineNumSpan = document.createElement('span')
+      lineNumSpan.className = 'diff-zone-line-num'
+      lineNumSpan.style.cssText = 'width: 40px; text-align: right; padding-right: 12px; color: rgba(255,255,255,0.4); font-size: 12px;'
+      lineNumSpan.textContent = String(selection.startLineNumber + idx)
+      
+      const plusSpan = document.createElement('span')
+      plusSpan.className = 'diff-zone-plus'
+      plusSpan.style.cssText = 'width: 20px; color: #3fb950; font-weight: bold;'
+      plusSpan.textContent = '+'
+      
+      const lineContentSpan = document.createElement('span')
+      lineContentSpan.className = 'diff-zone-line-content'
+      lineContentSpan.style.cssText = 'flex: 1; color: #e6edf3; white-space: pre;'
+      lineContentSpan.textContent = line || ' '
+      
+      lineDiv.appendChild(lineNumSpan)
+      lineDiv.appendChild(plusSpan)
+      lineDiv.appendChild(lineContentSpan)
+      codeDiv.appendChild(lineDiv)
+    })
+    
+    domNode.appendChild(codeDiv)
+    
+    // Calcula altura da view zone (mínimo 100px)
+    const zoneHeight = Math.max((newLines.length * 20) + 50, 100)
+    
+    console.log('[Diff] Criando View Zone:', { 
+      afterLine: selection.endLineNumber, 
+      height: zoneHeight,
+      lines: newLines.length 
+    })
+    
+    diffViewZoneId = accessor.addZone({
+      afterLineNumber: selection.endLineNumber,
+      heightInPx: zoneHeight,
+      domNode: domNode,
+      suppressMouseDown: false
+    })
+    
+    console.log('[Diff] View Zone criada com ID:', diffViewZoneId)
+  })
+  
+  showInlineDiff.value = true
+  
+  // Scroll para mostrar o diff
+  monacoInstance.revealLineInCenter(selection.startLineNumber)
+}
+
+// Limpa todas as decorations e view zones de diff
+function clearDiffDecorations() {
+  if (!monacoInstance) return
+  
+  // Limpa decorations
+  if (diffDecorations.length > 0) {
+    diffDecorations = monacoInstance.deltaDecorations(diffDecorations, [])
+  }
+  
+  // Remove view zone
+  if (diffViewZoneId !== null) {
+    monacoInstance.changeViewZones((accessor) => {
+      accessor.removeZone(diffViewZoneId)
+    })
+    diffViewZoneId = null
+  }
+  
+  showInlineDiff.value = false
+  inlineDiffData.value = {
+    originalCode: '',
+    newCode: '',
+    selection: null,
+    filePath: ''
+  }
+}
+
+// Aceita as mudanças do diff inline
+async function acceptInlineDiff() {
+  if (!monacoInstance || !inlineDiffData.value.selection) return
+  
+  const { selection, newCode, filePath } = inlineDiffData.value
+  const model = monacoInstance.getModel()
+  
+  if (model) {
+    // Salvar checkpoint antes da edição
+    const originalContent = model.getValue()
+    saveCheckpoint(filePath, originalContent)
+    
+    // Aplicar a mudança
+    monacoInstance.executeEdits('ai-inline-diff', [{
+      range: new monaco.Range(
+        selection.startLineNumber,
+        selection.startColumn,
+        selection.endLineNumber,
+        selection.endColumn
+      ),
+      text: newCode,
+      forceMoveMarkers: true
+    }])
+    
+    // Marcar arquivo como modificado
+    if (activeTab.value) {
+      activeTab.value.dirty = true
+    }
+    
+    window.monarcoToast?.success('Alterações aplicadas! (Ctrl+Z para desfazer)')
+    
+    // Verificar erros de lint
+    const errors = await checkForLintErrors(filePath)
+    if (errors.length > 0) {
+      window.monarcoToast?.warning(`${errors.length} erro(s) detectado(s)`)
+    }
+  }
+  
+  // Limpar decorations
+  clearDiffDecorations()
+}
+
+// Rejeita as mudanças do diff inline
+function rejectInlineDiff() {
+  clearDiffDecorations()
+  window.monarcoToast?.info('Alterações rejeitadas')
+}
 
 const commandPaletteCommands = computed(() => [
   // File commands
@@ -301,6 +496,10 @@ const commandPaletteCommands = computed(() => [
   
   // Window
   { id: 'window.reload', label: 'Recarregar Janela', icon: '🔄', category: 'window', action: () => location.reload() },
+  
+  // AI commands
+  { id: 'ai.undoCheckpoint', label: 'AI: Desfazer Última Edição', icon: '↩️', category: 'ai', description: 'Restaurar checkpoint anterior', action: () => undoLastChange(activePath.value) },
+  { id: 'ai.toggleAutocomplete', label: 'AI: Toggle Autocomplete', icon: '✨', category: 'ai', action: () => toggleAutocomplete() },
 ])
 
 function startResize(e) {
@@ -511,6 +710,24 @@ function copyToClipboard(text) {
   navigator.clipboard.writeText(text).then(() => {
     console.log('Cor copiada:', text)
   })
+}
+
+function toggleAutocomplete() {
+  autocompleteEnabled.value = !autocompleteEnabled.value
+  
+  // Atualiza o serviço de autocomplete
+  if (window.monarco?.ai?.autocomplete) {
+    window.monarco.ai.autocomplete.setEnabled(autocompleteEnabled.value)
+  }
+  
+  // Notifica o usuário
+  if (window.monarcoToast) {
+    if (autocompleteEnabled.value) {
+      window.monarcoToast.success('AI Autocomplete ativado')
+    } else {
+      window.monarcoToast.info('AI Autocomplete desativado')
+    }
+  }
 }
 
 async function refreshTree() {
@@ -820,6 +1037,11 @@ function closeAIChat() {
   saveSettingsToFile()
 }
 
+function toggleAIChat() {
+  isAIChatOpen.value = !isAIChatOpen.value
+  saveSettingsToFile()
+}
+
 // Handler para ações do menu
 function handleMenuAction(action) {
   switch (action) {
@@ -833,11 +1055,7 @@ function handleMenuAction(action) {
       pickWorkspace()
       break
     case 'toggleAIChat':
-      if (isAIChatOpen.value) {
-        closeAIChat()
-      } else {
-        openAIChat()
-      }
+      toggleAIChat()
       break
     case 'toggleExplorer':
       // TODO: Implementar toggle do explorer
@@ -963,6 +1181,467 @@ const activePath = ref(null)
 
 const activeTab = computed(() => tabs.value.find((t) => t.path === activePath.value) ?? null)
 
+// Observa mudanças na aba ativa para recriar o editor Monaco
+watch(activeTab, (newTab, oldTab) => {
+  if (!newTab) {
+    // Destroi o editor se não há aba
+    if (monacoInstance) {
+      monacoInstance.dispose()
+      monacoInstance = null
+    }
+    return
+  }
+  
+  // Aguarda o DOM atualizar
+  nextTick(() => {
+    if (!monacoContainer.value) return
+    
+    // Destroi editor anterior se existir
+    if (monacoInstance) {
+      monacoInstance.dispose()
+    }
+    
+    // Cria novo editor
+    console.log('[Monaco] Criando editor para', newTab.name, 'linguagem:', newTab.language)
+    monacoInstance = monaco.editor.create(monacoContainer.value, {
+      value: newTab.value || '',
+      language: newTab.language || 'plaintext',
+      theme: 'vs-dark',
+      ...editorOptions.value
+    })
+    
+    // Registra event handlers
+    monacoInstance.onDidChangeModelContent(() => {
+      if (newTab) {
+        newTab.value = monacoInstance.getValue()
+        newTab.dirty = true
+      }
+    })
+    
+    // Chama handleEditorMount
+    handleEditorMount(monacoInstance)
+  })
+})
+
+// ============================================================================
+// MONACO EDITOR: Funções de configuração
+// NOTA: Essas funções DEVEM estar depois de activePath/activeTab para evitar
+// "Cannot access before initialization"
+// ============================================================================
+
+function handleEditorMount(editor) {
+  monacoInstance = editor
+  console.log('[Monaco] Editor montado!', editor)
+  console.log('[Monaco] Linguagem do modelo:', editor.getModel()?.getLanguageId())
+  
+  // Registra atalhos personalizados
+  registerEditorShortcuts(editor)
+  
+  // Registra provider de autocomplete com IA
+  registerInlineCompletionProvider()
+  
+  // Registra provider de sugestões baseado em palavras
+  registerWordBasedCompletionProvider()
+  
+  // Testa os providers registrados
+  setTimeout(() => {
+    const providers = monaco.languages.getLanguages()
+    console.log('[Monaco] Linguagens registradas:', providers.map(l => l.id))
+  }, 500)
+  
+  // Faz layout inicial após montar
+  setTimeout(() => {
+    if (monacoInstance) {
+      monacoInstance.layout()
+    }
+  }, 100)
+}
+
+/**
+ * Registra provider de completion baseado em palavras do documento
+ */
+let wordCompletionDisposable = null
+function registerWordBasedCompletionProvider() {
+  if (wordCompletionDisposable) {
+    wordCompletionDisposable.dispose()
+  }
+  
+  console.log('[Monaco] Registrando completion provider...')
+  
+  // Lista de linguagens que queremos suportar
+  const languages = ['javascript', 'typescript', 'html', 'css', 'json', 'markdown', 'plaintext']
+  
+  // Registra provider para cada linguagem
+  const disposables = languages.map(lang => {
+    return monaco.languages.registerCompletionItemProvider(lang, {
+      // Remove triggerCharacters para permitir acionamento manual
+      provideCompletionItems: (model, position) => {
+        console.log(`[Monaco] provideCompletionItems chamado para ${lang}!`, position)
+        
+        // Obtém a palavra atual sendo digitada
+        const word = model.getWordUntilPosition(position)
+        const range = {
+          startLineNumber: position.lineNumber,
+          endLineNumber: position.lineNumber,
+          startColumn: word.startColumn,
+          endColumn: word.endColumn
+        }
+        
+        // Extrai todas as palavras do documento
+        const text = model.getValue()
+        const wordPattern = /\b[a-zA-Z_][a-zA-Z0-9_]{2,}\b/g
+        const wordsSet = new Set()
+        let match
+        
+        while ((match = wordPattern.exec(text)) !== null) {
+          // Não inclui a palavra atual sendo digitada
+          if (match[0].toLowerCase() !== word.word.toLowerCase()) {
+            wordsSet.add(match[0])
+          }
+        }
+        
+        // Adiciona keywords comuns de JavaScript
+        const jsKeywords = [
+          'function', 'const', 'let', 'var', 'return', 'if', 'else', 'for', 'while',
+          'switch', 'case', 'break', 'continue', 'try', 'catch', 'finally', 'throw',
+          'async', 'await', 'class', 'extends', 'import', 'export', 'default', 'from',
+          'new', 'this', 'super', 'static', 'get', 'set', 'typeof', 'instanceof',
+          'true', 'false', 'null', 'undefined', 'console', 'document', 'window'
+        ]
+        jsKeywords.forEach(kw => wordsSet.add(kw))
+        
+        // Converte para suggestions
+        const suggestions = Array.from(wordsSet).map(w => ({
+          label: w,
+          kind: monaco.languages.CompletionItemKind.Keyword,
+          insertText: w,
+          range: range
+          // Removido: detail: 'Palavra do documento' - para não aparecer no autocomplete
+        }))
+        
+        console.log('[Monaco] Retornando', suggestions.length, 'sugestões')
+        
+        return { suggestions }
+      }
+    })
+  })
+  
+  // Guarda todos os disposables
+  wordCompletionDisposable = {
+    dispose: () => disposables.forEach(d => d.dispose())
+  }
+  
+  console.log('[Monaco] Provider registrado com sucesso para', languages.length, 'linguagens!')
+}
+
+/**
+ * Registra o provider de inline completions (autocomplete com IA)
+ */
+function registerInlineCompletionProvider() {
+  // Remove provider anterior se existir
+  if (autocompleteProviderDisposable) {
+    autocompleteProviderDisposable.dispose()
+  }
+  
+  autocompleteProviderDisposable = monaco.languages.registerInlineCompletionsProvider(
+    { pattern: '**' }, // Aplica a todos os arquivos
+    {
+      provideInlineCompletions: async (model, position, context, token) => {
+        // Verifica se autocomplete está habilitado
+        if (!autocompleteEnabled.value) {
+          return { items: [] }
+        }
+        
+        // Ignora se já está mostrando suggestions normais ou se foi trigger manual
+        if (context.triggerKind !== monaco.languages.InlineCompletionTriggerKind.Automatic) {
+          return { items: [] }
+        }
+        
+        // Verifica se o serviço de autocomplete está disponível
+        if (!window.monarco?.ai?.autocomplete?.complete) {
+          return { items: [] }
+        }
+        
+        // Obtém o texto antes e depois do cursor
+        const textBeforeCursor = model.getValueInRange({
+          startLineNumber: 1,
+          startColumn: 1,
+          endLineNumber: position.lineNumber,
+          endColumn: position.column
+        })
+        
+        const textAfterCursor = model.getValueInRange({
+          startLineNumber: position.lineNumber,
+          startColumn: position.column,
+          endLineNumber: model.getLineCount(),
+          endColumn: model.getLineMaxColumn(model.getLineCount())
+        })
+        
+        // Não faz autocomplete se o texto é muito pequeno
+        if (textBeforeCursor.trim().length < 10) {
+          return { items: [] }
+        }
+        
+        // Detecta linguagem
+        const language = model.getLanguageId()
+        const filePath = activePath.value || ''
+        
+        // Aborta request anterior se existir
+        if (autocompleteAbortController) {
+          autocompleteAbortController.abort()
+        }
+        autocompleteAbortController = new AbortController()
+        
+        try {
+          isAutocompleteLoading.value = true
+          
+          // Chama o serviço de autocomplete
+          const result = await window.monarco.ai.autocomplete.complete({
+            prefix: textBeforeCursor,
+            suffix: textAfterCursor,
+            language: language,
+            filePath: filePath
+          })
+          
+          // Verifica se foi cancelado
+          if (token.isCancellationRequested || result.aborted) {
+            return { items: [] }
+          }
+          
+          // Retorna a compleção
+          if (result.insertText && result.insertText.trim()) {
+            return {
+              items: [{
+                insertText: result.insertText,
+                range: {
+                  startLineNumber: position.lineNumber,
+                  startColumn: position.column,
+                  endLineNumber: position.lineNumber,
+                  endColumn: position.column
+                }
+              }]
+            }
+          }
+          
+          return { items: [] }
+        } catch (error) {
+          if (error.name !== 'AbortError') {
+            console.error('Autocomplete error:', error)
+          }
+          return { items: [] }
+        } finally {
+          isAutocompleteLoading.value = false
+        }
+      },
+      
+      freeInlineCompletions: () => {
+        // Limpa recursos se necessário
+      }
+    }
+  )
+}
+
+function registerEditorShortcuts(editor) {
+  // Usa o Monaco importado diretamente
+  const { KeyMod, KeyCode } = monaco
+
+  // Ctrl+D - Duplicar linha
+  editor.addAction({
+    id: 'duplicate-line',
+    label: 'Duplicate Line',
+    keybindings: [
+      KeyMod.CtrlCmd | KeyCode.KeyD
+    ],
+    run: (ed) => {
+      ed.trigger('keyboard', 'editor.action.copyLinesDownAction', null)
+    }
+  })
+  
+  // Ctrl+/ - Comentar/Descomentar
+  editor.addAction({
+    id: 'toggle-comment',
+    label: 'Toggle Line Comment',
+    keybindings: [
+      KeyMod.CtrlCmd | KeyCode.Slash
+    ],
+    run: (ed) => {
+      ed.trigger('keyboard', 'editor.action.commentLine', null)
+    }
+  })
+  
+  // Alt+↑ - Mover linha para cima
+  editor.addAction({
+    id: 'move-line-up',
+    label: 'Move Line Up',
+    keybindings: [
+      KeyMod.Alt | KeyCode.UpArrow
+    ],
+    run: (ed) => {
+      ed.trigger('keyboard', 'editor.action.moveLinesUpAction', null)
+    }
+  })
+  
+  // Alt+↓ - Mover linha para baixo
+  editor.addAction({
+    id: 'move-line-down',
+    label: 'Move Line Down',
+    keybindings: [
+      KeyMod.Alt | KeyCode.DownArrow
+    ],
+    run: (ed) => {
+      ed.trigger('keyboard', 'editor.action.moveLinesDownAction', null)
+    }
+  })
+  
+  // Ctrl+Shift+K - Deletar linha
+  editor.addAction({
+    id: 'delete-line',
+    label: 'Delete Line',
+    keybindings: [
+      KeyMod.CtrlCmd | KeyMod.Shift | KeyCode.KeyK
+    ],
+    run: (ed) => {
+      ed.trigger('keyboard', 'editor.action.deleteLines', null)
+    }
+  })
+  
+  // Ctrl+Shift+D - Duplicar seleção
+  editor.addAction({
+    id: 'duplicate-selection',
+    label: 'Duplicate Selection',
+    keybindings: [
+      KeyMod.CtrlCmd | KeyMod.Shift | KeyCode.KeyD
+    ],
+    run: (ed) => {
+      const selection = ed.getSelection()
+      const text = ed.getModel().getValueInRange(selection)
+      ed.executeEdits('', [{
+        range: selection,
+        text: text + text
+      }])
+    }
+  })
+  
+  // Ctrl+] - Indent
+  editor.addAction({
+    id: 'indent-line',
+    label: 'Indent Line',
+    keybindings: [
+      KeyMod.CtrlCmd | KeyCode.BracketRight
+    ],
+    run: (ed) => {
+      ed.trigger('keyboard', 'editor.action.indentLines', null)
+    }
+  })
+  
+  // Ctrl+[ - Outdent
+  editor.addAction({
+    id: 'outdent-line',
+    label: 'Outdent Line',
+    keybindings: [
+      KeyMod.CtrlCmd | KeyCode.BracketLeft
+    ],
+    run: (ed) => {
+      ed.trigger('keyboard', 'editor.action.outdentLines', null)
+    }
+  })
+  
+  // Ctrl+Espaço - Acionar Autocomplete/IntelliSense
+  // Nota: Ctrl+Espaço pode ser interceptado pelo sistema (IBus/Fcitx no Linux)
+  // Registramos com addCommand para ter maior prioridade
+  editor.addCommand(KeyMod.CtrlCmd | KeyCode.Space, () => {
+    editor.trigger('keyboard', 'editor.action.triggerSuggest', null)
+  })
+  
+  // Ctrl+I - Alternativa para Trigger Suggest (não conflita com sistema)
+  editor.addCommand(KeyMod.CtrlCmd | KeyCode.KeyI, () => {
+    console.log('[Monaco] Ctrl+I pressionado! Acionando suggest...')
+    editor.trigger('keyboard', 'editor.action.triggerSuggest', null)
+  })
+  
+  // Também registra como action para aparecer no command palette
+  editor.addAction({
+    id: 'trigger-suggest',
+    label: 'Trigger Suggest (Ctrl+Space ou Ctrl+I)',
+    keybindings: [],
+    run: (ed) => {
+      ed.trigger('keyboard', 'editor.action.triggerSuggest', null)
+    }
+  })
+  
+  // Ctrl+Shift+F - Format document
+  editor.addAction({
+    id: 'format-document',
+    label: 'Format Document',
+    keybindings: [
+      KeyMod.CtrlCmd | KeyMod.Shift | KeyCode.KeyF
+    ],
+    run: (ed) => {
+      ed.trigger('keyboard', 'editor.action.formatDocument', null)
+    }
+  })
+  
+  // Ctrl+K - Edição inline com IA
+  editor.addAction({
+    id: 'ai-inline-edit',
+    label: 'AI: Edit Selection (Ctrl+K)',
+    keybindings: [
+      KeyMod.CtrlCmd | KeyCode.KeyK
+    ],
+    run: (ed) => {
+      // Emitir evento para abrir o popup de edição inline
+      const selection = ed.getSelection()
+      const model = ed.getModel()
+      
+      if (!model) return
+      
+      // Se não tem seleção, seleciona a linha atual
+      let range = selection
+      if (selection.isEmpty()) {
+        const lineNumber = selection.startLineNumber
+        range = {
+          startLineNumber: lineNumber,
+          startColumn: 1,
+          endLineNumber: lineNumber,
+          endColumn: model.getLineMaxColumn(lineNumber)
+        }
+        ed.setSelection(range)
+      }
+      
+      const selectedText = model.getValueInRange(range)
+      const position = ed.getPosition()
+      
+      // Notificar a UI para mostrar o popup
+      window.dispatchEvent(new CustomEvent('monarco:ctrlk', {
+        detail: {
+          selection: range,
+          text: selectedText,
+          position: position,
+          filePath: window.monarcoEditor?.getCurrentFile?.() || ''
+        }
+      }))
+    }
+  })
+  
+  // Ctrl+L - Toggle AI Chat
+  editor.addAction({
+    id: 'toggle-ai-chat',
+    label: 'Toggle AI Chat (Ctrl+L)',
+    keybindings: [
+      KeyMod.CtrlCmd | KeyCode.KeyL
+    ],
+    run: () => {
+      // Dispara evento para toggle do chat
+      window.dispatchEvent(new CustomEvent('monarco:toggle-ai-chat'))
+    }
+  })
+}
+
+// ============================================================================
+// FIM DAS FUNÇÕES DO MONACO EDITOR
+// ============================================================================
+
+
 const hasDirtyTabs = computed(() => tabs.value.some((t) => t.dirty))
 
 const closeConfirmOpen = ref(false)
@@ -992,8 +1671,13 @@ const editorOptions = computed(() => ({
   lineNumbers: editorSettings.value.lineNumbers || 'on',
   // Recursos avançados
   suggestOnTriggerCharacters: true,
-  quickSuggestions: true,
-  wordBasedSuggestions: true,
+  quickSuggestions: {
+    other: true,
+    comments: false,
+    strings: true
+  },
+  wordBasedSuggestions: 'currentDocument',
+  wordBasedSuggestionsOnlySameLanguage: true,
   formatOnPaste: true,
   formatOnType: true,
   autoClosingBrackets: 'always',
@@ -1018,8 +1702,14 @@ const editorOptions = computed(() => ({
     showVariables: true,
     showModules: true,
     showProperties: true,
-    showMethods: true
+    showMethods: true,
+    showWords: true,
+    insertMode: 'insert',
+    filterGraceful: true,
+    localityBonus: true
   },
+  acceptSuggestionOnEnter: 'on',
+  tabCompletion: 'on',
   folding: true,
   foldingStrategy: 'indentation',
   showFoldingControls: 'always',
@@ -1793,6 +2483,38 @@ function handleCtrlKEvent(event) {
   ctrlKPosition.value = position
   ctrlKFilePath.value = filePath
   ctrlKInput.value = ''
+  ctrlKShowPreview.value = false
+  ctrlKPreviewCode.value = ''
+  
+  // Calcular posição do widget inline (logo abaixo da seleção)
+  if (monacoInstance && ctrlKInlineMode.value) {
+    try {
+      // Pega a posição do final da seleção
+      const endPosition = {
+        lineNumber: selection.endLineNumber,
+        column: selection.startColumn
+      }
+      
+      // Converte para coordenadas de tela
+      const coords = monacoInstance.getScrolledVisiblePosition(endPosition)
+      const editorDom = monacoInstance.getDomNode()
+      
+      if (coords && editorDom) {
+        const editorRect = editorDom.getBoundingClientRect()
+        const lineHeight = monacoInstance.getOption(monaco.editor.EditorOption.lineHeight)
+        
+        ctrlKWidgetPosition.value = {
+          top: editorRect.top + coords.top + lineHeight + 4,
+          left: editorRect.left + coords.left
+        }
+      }
+    } catch (e) {
+      console.error('Erro ao calcular posição do widget:', e)
+      // Fallback para posição central
+      ctrlKInlineMode.value = false
+    }
+  }
+  
   showCtrlKPopup.value = true
   
   // Focar no input após o popup aparecer
@@ -1807,6 +2529,8 @@ function cancelCtrlK() {
   ctrlKLoading.value = false
   ctrlKSelection.value = null
   ctrlKText.value = ''
+  ctrlKPreviewCode.value = ''
+  ctrlKShowPreview.value = false
   
   // Retornar foco ao editor
   if (monacoInstance) {
@@ -1846,46 +2570,105 @@ ${selectedCode}`
         newCode = codeBlockMatch[1]
       }
       
-      // Aplicar a mudança no editor
-      if (monacoInstance && selection) {
-        const model = monacoInstance.getModel()
-        if (model) {
-          // Criar a operação de edição
-          monacoInstance.executeEdits('ai-inline-edit', [{
-            range: selection,
-            text: newCode,
-            forceMoveMarkers: true
-          }])
-          
-          // Marcar arquivo como modificado
-          if (activeTab.value) {
-            activeTab.value.dirty = true
-          }
-          
-          window.monarcoToast?.success('Código editado com sucesso!')
-        }
-      }
+      // Salvar o código para preview
+      ctrlKPreviewCode.value = newCode
+      
+      // Fechar o popup do Ctrl+K e mostrar diff inline no editor
+      showCtrlKPopup.value = false
+      
+      // Mostrar diff diretamente no editor com decorations
+      showDiffInEditor(selection, selectedCode, newCode)
+      
+      ctrlKLoading.value = false
     } else {
       window.monarcoToast?.error('A IA não retornou uma resposta válida')
+      ctrlKLoading.value = false
     }
   } catch (error) {
     console.error('Erro ao processar Ctrl+K:', error)
     window.monarcoToast?.error('Erro ao processar: ' + error.message)
-  } finally {
-    cancelCtrlK()
+    ctrlKLoading.value = false
   }
+}
+
+// Aceitar as mudanças do Ctrl+K
+async function acceptCtrlKChanges() {
+  const selection = ctrlKSelection.value
+  const newCode = ctrlKPreviewCode.value
+  const filePath = ctrlKFilePath.value
+  
+  if (monacoInstance && selection && newCode) {
+    const model = monacoInstance.getModel()
+    if (model) {
+      // Salvar checkpoint antes da edição
+      const originalContent = model.getValue()
+      saveCheckpoint(filePath, originalContent)
+      
+      // Criar a operação de edição
+      monacoInstance.executeEdits('ai-inline-edit', [{
+        range: selection,
+        text: newCode,
+        forceMoveMarkers: true
+      }])
+      
+      // Marcar arquivo como modificado
+      if (activeTab.value) {
+        activeTab.value.dirty = true
+      }
+      
+      window.monarcoToast?.success('Código editado com sucesso! (Ctrl+Z para desfazer)')
+      
+      // Verificar erros de lint após a edição
+      const errors = await checkForLintErrors(filePath)
+      if (errors.length > 0) {
+        window.monarcoToast?.warning(`${errors.length} erro(s) detectado(s) após a edição`)
+        console.log('Lint errors:', errors)
+      }
+    }
+  }
+  
+  // Fechar o popup
+  cancelCtrlK()
+}
+
+// Rejeitar as mudanças do Ctrl+K
+function rejectCtrlKChanges() {
+  ctrlKShowPreview.value = false
+  ctrlKPreviewCode.value = ''
+  // Voltar para o input para tentar novamente
+  nextTick(() => {
+    ctrlKInputRef.value?.focus()
+  })
+}
+
+// Usar uma sugestão do Ctrl+K
+function useCtrlKSuggestion(suggestion) {
+  ctrlKInput.value = suggestion
+  ctrlKInputRef.value?.focus()
 }
 
 function onKeyDown(e) {
   if (!e.isTrusted) return
 
   if (e.key === 'Escape') {
+    // Fechar diff inline se estiver aberto
+    if (showInlineDiff.value) {
+      rejectInlineDiff()
+      return
+    }
     // Fechar popup do Ctrl+K se estiver aberto
     if (showCtrlKPopup.value) {
       cancelCtrlK()
       return
     }
     closeContextMenu()
+    return
+  }
+  
+  // Enter para aceitar diff inline
+  if (e.key === 'Enter' && showInlineDiff.value) {
+    e.preventDefault()
+    acceptInlineDiff()
     return
   }
 
@@ -1908,7 +2691,7 @@ function onKeyDown(e) {
 
   if (isCmdOrCtrl && e.key.toLowerCase() === 'l') {
     e.preventDefault()
-    openAIChat()
+    toggleAIChat()
   }
 
   if (isCmdOrCtrl && e.shiftKey && e.key.toLowerCase() === ',') {
@@ -1930,6 +2713,10 @@ function onKeyDown(e) {
 }
 
 onMounted(async () => {
+  console.log('\n================================================')
+  console.log('🚀 [App.vue] onMounted INICIADO - Vue renderizado com sucesso!')
+  console.log('================================================\n')
+  
   refreshIsMaximized()
   await loadSettings()
   window.addEventListener('keydown', onKeyDown)
@@ -2040,16 +2827,34 @@ onMounted(async () => {
   
   // Carrega o último workspace automaticamente
   try {
+    console.log('📂 [onMounted] Iniciando carregamento do último workspace')
+    console.log('🔍 [onMounted] window.monarco disponível?', !!window.monarco)
+    console.log('🔍 [onMounted] window.monarco.workspace?', !!window.monarco?.workspace)
+    
     const lastWorkspace = await window.monarco.workspace.getLast()
+    console.log('✅ [onMounted] Último workspace recuperado:', { lastWorkspace })
+    
     if (lastWorkspace && lastWorkspace.path) {
+      console.log('📂 [onMounted] Abrindo workspace recente:', lastWorkspace.path)
       const path = await window.monarco.workspace.openRecent(lastWorkspace.path)
+      console.log('✅ [onMounted] Workspace aberto:', { path })
+      
       if (path) {
         workspacePath.value = path
+        console.log('✅ [onMounted] workspacePath definido:', { workspacePath: path })
+        
+        console.log('🌳 [onMounted] Atualizando árvore de arquivos')
         await refreshTree()
+        console.log('✅ [onMounted] Árvore atualizada:', { treeSize: tree.value?.children?.length })
+      } else {
+        console.warn('⚠️ [onMounted] workspace.openRecent retornou vazio')
       }
+    } else {
+      console.warn('⚠️ [onMounted] Nenhum workspace anterior encontrado')
     }
   } catch (e) {
-    console.log('Não foi possível carregar o último workspace:', e.message)
+    console.error('❌ [onMounted] Erro ao carregar workspace:', e)
+    console.error('Stack:', e.stack)
   }
   
   // ResizeObserver para o container do editor
@@ -2065,6 +2870,9 @@ onMounted(async () => {
   
   // Listener para Ctrl+K (edição inline com IA)
   window.addEventListener('monarco:ctrlk', handleCtrlKEvent)
+  
+  // Listener para Ctrl+L (toggle AI chat)
+  window.addEventListener('monarco:toggle-ai-chat', toggleAIChat)
 })
 
 onUnmounted(() => {
@@ -2074,10 +2882,17 @@ onUnmounted(() => {
   window.removeEventListener('pointerdown', onGlobalPointerDown)
   window.removeEventListener('resize', layoutMonaco)
   window.removeEventListener('monarco:ctrlk', handleCtrlKEvent)
+  window.removeEventListener('monarco:toggle-ai-chat', toggleAIChat)
   
   if (resizeObserver) {
     resizeObserver.disconnect()
     resizeObserver = null
+  }
+  
+  // Limpa o provider de autocomplete
+  if (autocompleteProviderDisposable) {
+    autocompleteProviderDisposable.dispose()
+    autocompleteProviderDisposable = null
   }
 })
 </script>
@@ -2218,7 +3033,7 @@ onUnmounted(() => {
           <button :disabled="!selectedNode || selectedNode.path === workspacePath" @click="deleteSelected" title="Delete">
             <span class="icon-trash"></span>
           </button>
-          <button @click="openAIChat" title="IA Chat">
+          <button @click="toggleAIChat" title="IA Chat (Ctrl+L)" :class="{ active: isAIChatOpen }">
             <span class="icon-comment-dots"></span>
           </button>
           <button @click="toggleTerminal" title="Terminal (Ctrl+`)">
@@ -2696,15 +3511,7 @@ onUnmounted(() => {
           <div v-if="!activeTab" class="emptyState">
             Open a file from the explorer.
           </div>
-          <MonacoEditor
-            v-else
-            :language="activeTab.language"
-            :value="activeTab.value"
-            theme="vs-dark"
-            :options="editorOptions"
-            @change="onEditorChange"
-            @editorDidMount="handleEditorMount"
-          />
+          <div v-else ref="monacoContainer" class="monaco-editor-container"></div>
         </div>
 
         <!-- Terminal Resizer -->
@@ -2725,10 +3532,13 @@ onUnmounted(() => {
         :language="activeTab?.language || ''"
         :line-col="statusLineCol"
         :picked-color="pickedColor"
+        :autocomplete-enabled="autocompleteEnabled"
+        :autocomplete-loading="isAutocompleteLoading"
         @activate-eyedropper="activateEyedropper"
         @toggle-color-palette="toggleColorPalette"
         @copy-color="copyToClipboard"
         @clear-picked-color="clearPickedColor"
+        @toggle-autocomplete="toggleAutocomplete"
       />
     </main>
 
@@ -2765,39 +3575,103 @@ onUnmounted(() => {
     @execute="executeCommandPaletteAction"
   />
   
-  <!-- Ctrl+K Inline Edit Popup -->
+  <!-- Ctrl+K Inline Edit Widget -->
   <Teleport to="body">
-    <div v-if="showCtrlKPopup" class="ctrlk-overlay" @click="cancelCtrlK">
-      <div class="ctrlk-popup" @click.stop>
+    <div 
+      v-if="showCtrlKPopup" 
+      class="ctrlk-overlay" 
+      :class="{ 'ctrlk-overlay-inline': ctrlKInlineMode }"
+      @click="cancelCtrlK"
+    >
+      <div 
+        class="ctrlk-popup" 
+        :class="{ 
+          'ctrlk-expanded': ctrlKShowPreview,
+          'ctrlk-inline-widget': ctrlKInlineMode
+        }" 
+        :style="ctrlKInlineMode ? { 
+          position: 'fixed',
+          top: ctrlKWidgetPosition.top + 'px', 
+          left: ctrlKWidgetPosition.left + 'px',
+          transform: 'none'
+        } : {}"
+        @click.stop
+      >
         <div class="ctrlk-header">
-          <span class="ctrlk-icon">AI</span>
-          <span class="ctrlk-title">Edit with AI</span>
-          <span class="ctrlk-hint">Enter → Submit · Esc → Cancel</span>
+          <span class="ctrlk-icon">✨</span>
+          <span class="ctrlk-title">{{ ctrlKShowPreview ? 'Preview' : 'AI Edit' }}</span>
+          <span class="ctrlk-hint">{{ ctrlKShowPreview ? 'Enter → Aceitar' : 'Enter → Gerar' }}</span>
+          <button class="ctrlk-close" @click="cancelCtrlK">×</button>
         </div>
-        <div class="ctrlk-input-area">
-          <input
-            ref="ctrlKInputRef"
-            v-model="ctrlKInput"
-            type="text"
-            class="ctrlk-input"
-            placeholder="Descreva a edição... (ex: adicione tratamento de erros)"
-            :disabled="ctrlKLoading"
-            @keydown.enter="submitCtrlK"
-            @keydown.esc="cancelCtrlK"
-          />
-          <button 
-            class="ctrlk-submit" 
-            :disabled="!ctrlKInput.trim() || ctrlKLoading"
-            @click="submitCtrlK"
-          >
-            <span v-if="ctrlKLoading" class="ctrlk-loading"></span>
-            <span v-else>↑</span>
-          </button>
-        </div>
-        <div v-if="ctrlKText" class="ctrlk-preview">
-          <div class="ctrlk-preview-label">Código selecionado ({{ ctrlKText.split('\n').length }} linhas)</div>
-          <pre class="ctrlk-preview-code">{{ ctrlKText.length > 200 ? ctrlKText.slice(0, 200) + '...' : ctrlKText }}</pre>
-        </div>
+        
+        <!-- Modo Input -->
+        <template v-if="!ctrlKShowPreview">
+          <div class="ctrlk-input-area">
+            <input
+              ref="ctrlKInputRef"
+              v-model="ctrlKInput"
+              type="text"
+              class="ctrlk-input"
+              placeholder="O que você quer fazer?"
+              :disabled="ctrlKLoading"
+              @keydown.enter="submitCtrlK"
+              @keydown.esc="cancelCtrlK"
+            />
+            <button 
+              class="ctrlk-submit" 
+              :disabled="!ctrlKInput.trim() || ctrlKLoading"
+              @click="submitCtrlK"
+            >
+              <span v-if="ctrlKLoading" class="ctrlk-loading"></span>
+              <span v-else>↑</span>
+            </button>
+          </div>
+          
+          <!-- Sugestões de prompts (compact) -->
+          <div v-if="!ctrlKLoading && !ctrlKInput" class="ctrlk-suggestions">
+            <button 
+              v-for="(suggestion, idx) in ctrlKSuggestions.slice(0, 3)" 
+              :key="idx"
+              class="ctrlk-suggestion"
+              @click="useCtrlKSuggestion(suggestion)"
+            >
+              {{ suggestion }}
+            </button>
+          </div>
+          
+          <!-- Info sobre seleção -->
+          <div v-if="ctrlKText" class="ctrlk-selection-info">
+            <span class="icon-code"></span>
+            {{ ctrlKText.split('\n').length }} linhas selecionadas
+          </div>
+        </template>
+        
+        <!-- Modo Preview Diff -->
+        <template v-else>
+          <div class="ctrlk-diff-preview">
+            <div class="ctrlk-diff-header">
+              <span class="ctrlk-diff-instruction">"​{{ ctrlKInput }}"</span>
+            </div>
+            <div class="ctrlk-diff-content">
+              <div class="ctrlk-diff-side ctrlk-diff-original">
+                <div class="ctrlk-diff-side-label">Original</div>
+                <pre>{{ ctrlKText }}</pre>
+              </div>
+              <div class="ctrlk-diff-side ctrlk-diff-new">
+                <div class="ctrlk-diff-side-label">Novo</div>
+                <pre>{{ ctrlKPreviewCode }}</pre>
+              </div>
+            </div>
+          </div>
+          <div class="ctrlk-actions">
+            <button class="ctrlk-action-btn ctrlk-reject" @click="rejectCtrlKChanges">
+              <span class="icon-xmark"></span> Voltar
+            </button>
+            <button class="ctrlk-action-btn ctrlk-accept" @click="acceptCtrlKChanges">
+              <span class="icon-check"></span> Aceitar
+            </button>
+          </div>
+        </template>
       </div>
     </div>
   </Teleport>

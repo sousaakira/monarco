@@ -92,6 +92,15 @@ contextBridge.exposeInMainWorld('monarco', {
       const listener = (_event, toolInfo) => callback(toolInfo)
       ipcRenderer.on('ai:tool-call', listener)
       return () => ipcRenderer.removeListener('ai:tool-call', listener)
+    },
+    // Autocomplete AI APIs
+    autocomplete: {
+      init: (settings) => ipcRenderer.invoke('ai:autocomplete:init', settings),
+      complete: (params) => ipcRenderer.invoke('ai:autocomplete:complete', params),
+      updateSettings: (settings) => ipcRenderer.invoke('ai:autocomplete:updateSettings', settings),
+      setEnabled: (enabled) => ipcRenderer.invoke('ai:autocomplete:setEnabled', enabled),
+      clearCache: () => ipcRenderer.invoke('ai:autocomplete:clearCache'),
+      abort: () => ipcRenderer.invoke('ai:autocomplete:abort')
     }
   },
   

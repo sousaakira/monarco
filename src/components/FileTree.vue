@@ -72,17 +72,23 @@ const FILE_ICON_MAP = {
 
 const getIconPath = computed(() => {
   const node = props.node
-  if (!node) return '/assets/icons/default_file.svg'
   
-  if (node.kind === 'dir') {
-    const name = node.name.toLowerCase()
-    const folderType = FOLDER_TYPES[name] || 'default_folder'
-    const suffix = isNodeExpanded.value ? '_opened' : ''
-    return `/assets/icons/${folderType}${suffix}.svg`
-  } else {
-    const ext = node.name.split('.').pop()?.toLowerCase() || ''
-    return `/assets/icons/${FILE_ICON_MAP[ext] || 'default_file'}.svg`
+  let iconName = 'default_file.svg'
+  if (node) {
+    if (node.kind === 'dir') {
+      const name = node.name.toLowerCase()
+      const folderType = FOLDER_TYPES[name] || 'default_folder'
+      const suffix = isNodeExpanded.value ? '_opened' : ''
+      iconName = `${folderType}${suffix}.svg`
+    } else {
+      const ext = node.name.split('.').pop()?.toLowerCase() || ''
+      iconName = `${FILE_ICON_MAP[ext] || 'default_file'}.svg`
+    }
   }
+  
+  // Usar path relativo que funciona em HTTP (dev) e file:// (produção ASAR)
+  // Path relativo é resolvido relativo à URL da página, não ao filesystem absoluto
+  return `./icons/${iconName}`
 })
 
 function handleRowClick() {
