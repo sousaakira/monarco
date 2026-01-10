@@ -503,13 +503,21 @@ export class AIAgent {
     }
 
     try {
-      const response = await fetch(this.settings.endpoint, {
+      // Opções para o fetch
+      const fetchOptions = {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json'
         },
         body: JSON.stringify(body)
-      })
+      }
+
+      // Se houver uma API Key nas configurações, adiciona o header
+      if (this.settings.apiKey) {
+        fetchOptions.headers['Authorization'] = `Bearer ${this.settings.apiKey}`
+      }
+
+      const response = await fetch(this.settings.endpoint, fetchOptions)
 
       if (!response.ok) {
         const errorText = await response.text()
@@ -558,7 +566,12 @@ export class AIAgent {
         finish_reason: choice.finish_reason
       }
     } catch (error) {
-      console.error('Erro ao chamar LLM:', error)
+      console.error('❌ [AI Agent] Erro detalhado ao chamar LLM:', {
+        message: error.message,
+        code: error.code,
+        cause: error.cause, // Importante para ver o erro real do fetch
+        endpoint: this.settings.endpoint
+      })
       throw error
     }
   }
