@@ -1,4 +1,4 @@
-import { app, BrowserWindow, dialog, ipcMain, screen } from 'electron'
+import { app, BrowserWindow, dialog, ipcMain, screen, Menu } from 'electron'
 import path from 'node:path'
 import fs from 'node:fs/promises'
 import { existsSync } from 'node:fs'
@@ -367,6 +367,11 @@ function createWindow() {
 }
 
 app.whenReady().then(async () => {
+  // Desabilita o menu apenas em produção. Em desenvolvimento, ele é mantido para facilitar o debug.
+  if (!isDev) {
+    Menu.setApplicationMenu(null)
+  }
+  
   // Lida com abertura de diretório via segunda instância (Abrir com...)
   app.on('second-instance', async (event, argv, workingDirectory) => {
     if (mainWindow) {
