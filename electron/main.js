@@ -12,13 +12,6 @@ const execAsync = promisify(exec)
 
 const isDev = !app.isPackaged
 
-// Trava de instância única para suportar "Abrir com" e evitar múltiplas janelas
-const gotTheLock = app.requestSingleInstanceLock()
-
-if (!gotTheLock) {
-  app.quit()
-}
-
 /**
  * Tenta extrair um caminho de diretório dos argumentos da linha de comando
  */
@@ -372,20 +365,6 @@ app.whenReady().then(async () => {
     Menu.setApplicationMenu(null)
   }
   
-  // Lida com abertura de diretório via segunda instância (Abrir com...)
-  app.on('second-instance', async (event, argv, workingDirectory) => {
-    if (mainWindow) {
-      if (mainWindow.isMinimized()) mainWindow.restore()
-      mainWindow.focus()
-      
-      const pathFromArgv = await getPathFromArgv(argv)
-      if (pathFromArgv) {
-        log('info', 'app:second-instance', 'Abrindo novo workspace via CLI', { path: pathFromArgv })
-        mainWindow.webContents.send('workspace:open-from-cli', pathFromArgv)
-      }
-    }
-  })
-
   ipcMain.handle('window:minimize', (evt) => {
     const win = BrowserWindow.fromWebContents(evt.sender)
     if (!win) return
