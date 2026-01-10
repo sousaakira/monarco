@@ -12,6 +12,46 @@ const execAsync = promisify(exec)
 
 const isDev = !app.isPackaged
 
+// Trava de instância única para suportar "Abrir com" e evitar múltiplas janelas
+const gotTheLock = app.requestSingleInstanceLock()
+
+if (!gotTheLock) {
+  app.quit()
+}
+
+/**
+ * Tenta extrair um caminho de diretório dos argumentos da linha de comando
+ */
+async function getPathFromArgv(argv) {
+  // Ignora o primeiro argumento (executável)
+  // Se estiver em dev, ignora também o segundo argumento (script do vite/electron)
+  const startIndex = isDev ? 2 : 1
+  const userArgs = argv.slice(startIndex)
+  
+  // Procuramos por algo que pareça um caminho absoluto ou relativo existente
+  for (const arg of userArgs) {
+    if (arg.startsWith('-')) continue // Pula flags como --remote-debugging-port
+    
+    try {
+      // Resolve caminhos relativos ao diretório atual de execução
+      const resolvedPath = path.isAbsolute(arg) ? arg : path.resolve(process.cwd(), arg)
+      
+      if (existsSync(resolvedPath)) {
+        const stat = await fs.stat(resolvedPath)
+        if (stat.isDirectory()) {
+          return resolvedPath
+        } else {
+          // Se for arquivo, pegamos o diretório pai
+          return path.dirname(resolvedPath)
+        }
+      }
+    } catch {
+      // Ignora argumentos que não são caminhos válidos
+    }
+  }
+  return null
+}
+
 // ===== DEBUG CONFIGURATION =====
 const DEBUG = {
   enabled: true,
@@ -33,6 +73,7 @@ const log = (level, context, message, data = null) => {
 }
 
 let currentWorkspacePath = null
+let mainWindow = null // Referência global para a janela principal
 
 // Terminal PTY instances
 const terminals = new Map()
@@ -272,6 +313,8 @@ function createWindow() {
   })
   log('info', 'electron:createWindow', '✅ BrowserWindow criado')
 
+  mainWindow = win // Salva referência global
+
   // Log quando o arquivo é carregado
   win.webContents.on('did-start-loading', () => {
     log('info', 'electron:renderer', '📄 Começando a carregar página')
@@ -323,7 +366,21 @@ function createWindow() {
   return win
 }
 
-app.whenReady().then(() => {
+app.whenReady().then(async () => {
+  // Lida com abertura de diretório via segunda instância (Abrir com...)
+  app.on('second-instance', async (event, argv, workingDirectory) => {
+    if (mainWindow) {
+      if (mainWindow.isMinimized()) mainWindow.restore()
+      mainWindow.focus()
+      
+      const pathFromArgv = await getPathFromArgv(argv)
+      if (pathFromArgv) {
+        log('info', 'app:second-instance', 'Abrindo novo workspace via CLI', { path: pathFromArgv })
+        mainWindow.webContents.send('workspace:open-from-cli', pathFromArgv)
+      }
+    }
+  })
+
   ipcMain.handle('window:minimize', (evt) => {
     const win = BrowserWindow.fromWebContents(evt.sender)
     if (!win) return
@@ -1290,7 +1347,16 @@ app.whenReady().then(() => {
   const originalWorkspaceSelect = ipcMain.listeners('workspace:select')[0]
   // Hook para atualizar workspace no agente
 
-  createWindow()
+  const win = createWindow()
+
+  // Verifica se o app foi iniciado com um caminho via CLI
+  win.webContents.once('did-finish-load', async () => {
+    const pathFromArgv = await getPathFromArgv(process.argv)
+    if (pathFromArgv) {
+      log('info', 'app:startup', 'Abrindo workspace inicial via CLI', { path: pathFromArgv })
+      win.webContents.send('workspace:open-from-cli', pathFromArgv)
+    }
+  })
 
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow()

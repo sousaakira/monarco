@@ -46,7 +46,12 @@ contextBridge.exposeInMainWorld('monarco', {
     getRecent: () => ipcRenderer.invoke('workspace:getRecent'),
     openRecent: (path) => ipcRenderer.invoke('workspace:openRecent', path),
     getLast: () => ipcRenderer.invoke('workspace:getLast'),
-    removeRecent: (path) => ipcRenderer.invoke('workspace:removeRecent', path)
+    removeRecent: (path) => ipcRenderer.invoke('workspace:removeRecent', path),
+    onOpenFromCli: (callback) => {
+      const listener = (_event, path) => callback(path)
+      ipcRenderer.on('workspace:open-from-cli', listener)
+      return () => ipcRenderer.removeListener('workspace:open-from-cli', listener)
+    }
   },
   
   // Terminal APIs

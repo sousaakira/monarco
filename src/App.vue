@@ -1881,15 +1881,39 @@ function languageForPath(filePath) {
   return 'plaintext'
 }
 
+async function openWorkspace(path) {
+  if (!path) return
+  
+  lastError.value = null
+  try {
+    const openedPath = await window.monarco.workspace.openRecent(path)
+    if (openedPath) {
+      // Se estamos mudando de workspace, podemos querer fechar as abas atuais
+      // mas apenas se o caminho for realmente diferente
+      if (workspacePath.value !== openedPath) {
+        tabs.value = []
+        activePath.value = null
+      }
+      
+      workspacePath.value = openedPath
+      await refreshTree()
+      
+      const folderName = openedPath.split(/[/\\]/).pop() || openedPath
+      window.monarcoToast?.success(`Workspace aberto: ${folderName}`, { duration: 2000 })
+    }
+  } catch (e) {
+    console.error('Failed to open workspace:', e)
+    window.monarcoToast?.error(`Erro ao abrir workspace: ${e.message}`)
+  }
+}
+
 async function pickWorkspace() {
   lastError.value = null
   try {
     const selected = await window.monarco.selectWorkspace()
-    if (!selected) return
-
-    workspacePath.value = selected
-    tree.value = await window.monarco.listWorkspaceTree()
-    selectedNode.value = tree.value
+    if (selected) {
+      await openWorkspace(selected)
+    }
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e)
     console.error('pickWorkspace failed', e)
@@ -2825,36 +2849,22 @@ onMounted(async () => {
     })
   }
   
+  // Listener para abertura de workspace via CLI (Abrir com...)
+  if (window.monarco?.workspace?.onOpenFromCli) {
+    window.monarco.workspace.onOpenFromCli((path) => {
+      console.log('📂 [App] Recebido comando para abrir workspace via CLI:', path)
+      openWorkspace(path)
+    })
+  }
+
   // Carrega o último workspace automaticamente
   try {
-    console.log('📂 [onMounted] Iniciando carregamento do último workspace')
-    console.log('🔍 [onMounted] window.monarco disponível?', !!window.monarco)
-    console.log('🔍 [onMounted] window.monarco.workspace?', !!window.monarco?.workspace)
-    
     const lastWorkspace = await window.monarco.workspace.getLast()
-    console.log('✅ [onMounted] Último workspace recuperado:', { lastWorkspace })
-    
     if (lastWorkspace && lastWorkspace.path) {
-      console.log('📂 [onMounted] Abrindo workspace recente:', lastWorkspace.path)
-      const path = await window.monarco.workspace.openRecent(lastWorkspace.path)
-      console.log('✅ [onMounted] Workspace aberto:', { path })
-      
-      if (path) {
-        workspacePath.value = path
-        console.log('✅ [onMounted] workspacePath definido:', { workspacePath: path })
-        
-        console.log('🌳 [onMounted] Atualizando árvore de arquivos')
-        await refreshTree()
-        console.log('✅ [onMounted] Árvore atualizada:', { treeSize: tree.value?.children?.length })
-      } else {
-        console.warn('⚠️ [onMounted] workspace.openRecent retornou vazio')
-      }
-    } else {
-      console.warn('⚠️ [onMounted] Nenhum workspace anterior encontrado')
+      await openWorkspace(lastWorkspace.path)
     }
   } catch (e) {
-    console.error('❌ [onMounted] Erro ao carregar workspace:', e)
-    console.error('Stack:', e.stack)
+    console.error('❌ [onMounted] Erro ao carregar workspace inicial:', e)
   }
   
   // ResizeObserver para o container do editor
