@@ -383,7 +383,8 @@ const defaultSettings = {
     lineNumbers: 'on'
   },
   ai: {
-    apiUrl: 'http://192.168.1.18:8000/v1/chat/completions',
+    // apiUrl: 'http://192.168.1.18:8000/v1/chat/completions',
+    apiUrl: 'https://ia.auth.com.br/v1/chat/completions',
     model: 'Qwen/Qwen2.5-Coder-3B-Instruct',
     temperature: 0.2,
     maxTokens: 2048

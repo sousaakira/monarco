@@ -1280,7 +1280,8 @@ app.whenReady().then(async () => {
         const { AutocompleteService } = await import('./ai/autocomplete.js')
         const settings = await loadSettings()
         autocompleteService = new AutocompleteService({
-          endpoint: settings.ai?.endpoint?.replace('/chat/completions', '/completions') || 'http://192.168.1.18:8000/v1/completions',
+          // endpoint: settings.ai?.endpoint?.replace('/chat/completions', '/completions') || 'http://192.168.1.18:8000/v1/completions',
+          endpoint: settings.ai?.endpoint?.replace('/chat/completions', '/completions') || 'https://ia.auth.com.br/v1/completions',
           model: settings.ai?.model || 'Qwen/Qwen2.5-Coder-3B-Instruct',
           temperature: settings.ai?.temperature ?? 0.1,
           maxTokens: 128,
