@@ -155,7 +155,8 @@ const SYSTEM_PROMPT = PROMPTS.agent
 export class AIAgent {
   constructor(settings = {}) {
     this.settings = {
-      endpoint: settings.endpoint || 'http://192.168.1.18:8000/v1/chat/completions',
+      // endpoint: settings.endpoint || 'http://192.168.1.18:8000/v1/chat/completions',
+      endpoint: settings.endpoint || 'https://ia.auth.com.br/v1/chat/completions',
       model: settings.model || 'Qwen/Qwen2.5-Coder-3B-Instruct',
       temperature: settings.temperature || 0.2,
       maxTokens: settings.maxTokens || 4096,

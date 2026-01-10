@@ -100,7 +100,8 @@ const defaultSettings = {
   },
   ai: {
     provider: 'vllm',
-    endpoint: 'http://192.168.1.18:8000/v1/chat/completions',
+    // endpoint: 'http://192.168.1.18:8000/v1/chat/completions',
+    endpoint: 'https://ia.auth.com.br/v1/chat/completions',
     model: 'Qwen/Qwen2.5-Coder-7B-Instruct-AWQ',
     temperature: 0.2,
     maxTokens: 1024

@@ -151,7 +151,8 @@ log('info', 'ai:response', 'Resposta recebida', { tokens: response.usage?.total_
 ### Verificar endpoint
 ```bash
 # Terminal
-curl -X POST http://192.168.1.18:8000/v1/chat/completions \
+# curl -X POST http://192.168.1.18:8000/v1/chat/completions \
+curl -X POST https://ia.auth.com.br/v1/chat/completions \
   -H "Content-Type: application/json" \
   -d '{
     "model": "Qwen/Qwen2.5-Coder-7B-Instruct-AWQ",
