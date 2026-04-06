@@ -54,6 +54,23 @@ button:hover {
   border-color: #334061;
 }
 
+select {
+  color-scheme: dark;
+  background: var(--panel);
+  color: var(--text);
+  border: 1px solid var(--border);
+}
+
+select:disabled {
+  opacity: 0.6;
+}
+
+select option,
+select optgroup {
+  background: var(--panel);
+  color: var(--text);
+}
+
 .app {
   height: calc(100vh - 36px - 22px);
   display: grid;

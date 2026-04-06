@@ -55,6 +55,11 @@ contextBridge.exposeInMainWorld('monarco', {
       const listener = (_event, path) => callback(path)
       ipcRenderer.on('workspace:open-from-cli', listener)
       return () => ipcRenderer.removeListener('workspace:open-from-cli', listener)
+    },
+    onChanged: (callback) => {
+      const listener = (_event, info) => callback(info)
+      ipcRenderer.on('workspace:changed', listener)
+      return () => ipcRenderer.removeListener('workspace:changed', listener)
     }
   },
   

@@ -62,7 +62,7 @@ defineEmits(['select', 'close'])
   flex-shrink: 0;
 
   scrollbar-width: thin;
-  scrollbar-color: rgba(255, 255, 255, 0.22) transparent;
+  scrollbar-color: transparent transparent;
 }
 
 .tabs::-webkit-scrollbar {
@@ -74,12 +74,16 @@ defineEmits(['select', 'close'])
 }
 
 .tabs::-webkit-scrollbar-thumb {
-  background: rgba(255, 255, 255, 0.18);
+  background: transparent;
   border-radius: 999px;
 }
 
+.tabs:hover {
+  scrollbar-color: rgba(255, 255, 255, 0.22) transparent;
+}
+
 .tabs:hover::-webkit-scrollbar-thumb {
-  background: rgba(255, 255, 255, 0.28);
+  background: rgba(255, 255, 255, 0.22);
 }
 
 .tab {

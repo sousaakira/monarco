@@ -102,6 +102,12 @@ function emitFsChanged(changeInfo) {
   window.webContents.send('fs:changed', changeInfo)
 }
 
+function emitWorkspaceChanged(payload) {
+  const window = BrowserWindow.getAllWindows()[0]
+  if (!window) return
+  window.webContents.send('workspace:changed', payload)
+}
+
 async function addWorkspaceWatchDir(dirPath) {
   if (!workspaceWatchRoots.length) return
   if (workspaceWatchers.has(dirPath)) return
@@ -307,13 +313,11 @@ async function ensureCliToolsProject() {
 }
 
 async function loadSettings() {
+  const settingsPath = getSettingsPath()
   try {
-    const settingsPath = getSettingsPath()
-    await fs.access(settingsPath)
     const content = await fs.readFile(settingsPath, 'utf8')
     const parsed = JSON.parse(content)
     const base = { ...defaultSettings, ...parsed }
-    // Merge with defaults to ensure all keys exist
     return {
       ...base,
       editor: { ...defaultSettings.editor, ...parsed.editor },
@@ -328,12 +332,14 @@ async function loadSettings() {
       workspace: { ...defaultSettings.workspace, ...parsed.workspace },
       recentWorkspaces: parsed.recentWorkspaces || []
     }
-  } catch {
-    // File doesn't exist or is invalid, create with defaults
-    await ensureConfigDir()
-    const settingsPath = getSettingsPath()
-    const content = JSON.stringify(defaultSettings, null, 2)
-    await fs.writeFile(settingsPath, content, 'utf8')
+  } catch (e) {
+    if (e && typeof e === 'object' && e.code === 'ENOENT') {
+      await ensureConfigDir()
+      const content = JSON.stringify(defaultSettings, null, 2)
+      await fs.writeFile(settingsPath, content, 'utf8')
+      return { ...defaultSettings }
+    }
+    log('error', 'settings:load', 'Falha ao ler settings.json (usando defaults em memória)', { error: e?.message || String(e) })
     return { ...defaultSettings }
   }
 }
@@ -386,7 +392,16 @@ async function saveSettings(settingsPatch) {
   const current = await loadSettings()
   const merged = mergeSettings(current, settingsPatch)
   const content = JSON.stringify(merged, null, 2)
-  await fs.writeFile(settingsPath, content, 'utf8')
+  const tmpPath = settingsPath + '.tmp'
+  await fs.writeFile(tmpPath, content, 'utf8')
+  try {
+    await fs.rename(tmpPath, settingsPath)
+  } catch (e) {
+    try {
+      await fs.unlink(settingsPath)
+    } catch {}
+    await fs.rename(tmpPath, settingsPath)
+  }
   return merged
 }
 
@@ -532,6 +547,7 @@ async function setWorkspaceState({ folders, activeFolder }) {
     toolExecutor.setWorkspace(active)
   }
 
+  emitWorkspaceChanged({ folders: workspaceFolders, activeFolder: active || '' })
   return { folders: workspaceFolders, activeFolder: active }
 }
 

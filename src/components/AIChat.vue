@@ -21,16 +21,6 @@
           </button>
         </div>
         <div v-if="activeTab === 'terminal'" class="panel-tabs-right">
-          <select
-            v-if="workspaceFolderOptions.length > 1"
-            v-model="selectedAiCwd"
-            class="panel-profile-select"
-            title="Projeto"
-          >
-            <option v-for="p in workspaceFolderOptions" :key="p.path" :value="p.path">
-              {{ p.label }}
-            </option>
-          </select>
           <select v-model="selectedTerminalProfileId" class="panel-profile-select" :disabled="terminalProfiles.length === 0" title="Perfil">
             <option v-if="terminalProfiles.length === 0" value="">Sem perfis</option>
             <option v-for="p in terminalProfiles" :key="p.id" :value="p.id">
@@ -43,7 +33,7 @@
               type="button"
               title="Iniciar"
               @click="runAiTerminalStartupCommand"
-              :disabled="!aiTerminalReady || !activeAiProfile?.startupCommand"
+              :disabled="!terminalApiAvailable || !activeAiProfile?.startupCommand || isStartingAiCli"
             >
               <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor">
                 <path d="M8 5v14l11-7z"></path>
@@ -555,6 +545,32 @@
       </div>
     </div>
   </Teleport>
+
+  <Teleport to="body">
+    <div v-if="showAiProjectPicker" class="project-picker-overlay" @click="closeAiProjectPicker">
+      <div class="project-picker-modal" @click.stop>
+        <div class="project-picker-header">
+          <div class="project-picker-title">Escolher projeto</div>
+          <button class="project-picker-close" type="button" @click="closeAiProjectPicker">×</button>
+        </div>
+        <div class="project-picker-content">
+          <button
+            v-for="p in workspaceFolderOptions"
+            :key="p.path"
+            class="project-picker-item"
+            type="button"
+            @click="startAiCliInProject(p.path)"
+          >
+            <span class="project-picker-name">{{ p.label }}</span>
+            <span class="project-picker-path">{{ p.path }}</span>
+          </button>
+        </div>
+        <div class="project-picker-footer">
+          <button class="project-picker-btn" type="button" @click="closeAiProjectPicker">Cancelar</button>
+        </div>
+      </div>
+    </div>
+  </Teleport>
   </div>
 </template>
 
@@ -993,6 +1009,8 @@ const aiSavedSessions = ref([])
 const showAiSavedMenu = ref(false)
 const workspaceFolderOptions = ref([])
 const selectedAiCwd = ref('')
+const showAiProjectPicker = ref(false)
+const isStartingAiCli = ref(false)
 const cliStoreApiAvailable = !!window.monarco?.cliStore
 const showCliStoreModal = ref(false)
 const storeLoading = ref(false)
@@ -1074,16 +1092,21 @@ async function pasteToAiTerminal() {
   }
 }
 
-function runAiTerminalStartupCommand() {
-  const terminalId = activeAiTerminalId.value
-  if (!terminalId) return
+async function runAiTerminalStartupCommand() {
   const cmd = String(activeAiProfile.value?.startupCommand || '').trim()
   if (!cmd) {
     window.monarcoToast?.warning?.('Perfil sem comando de inicialização')
     return
   }
-  window.monarco?.terminal?.write?.(terminalId, cmd + '\n')
-  aiXterms.get(terminalId)?.focus?.()
+  if (!terminalApiAvailable) return
+
+  if (workspaceFolderOptions.value.length > 1) {
+    openAiProjectPicker()
+    return
+  }
+
+  const cwd = workspaceFolderOptions.value[0]?.path || selectedAiCwd.value || ''
+  await startAiCliInProject(cwd)
 }
 
 function stripAnsi(input) {
@@ -1137,6 +1160,35 @@ function folderLabel(p) {
   return parts[parts.length - 1] || p
 }
 
+function openAiProjectPicker() {
+  showAiProjectPicker.value = true
+}
+
+function closeAiProjectPicker() {
+  showAiProjectPicker.value = false
+}
+
+async function startAiCliInProject(projectPath) {
+  const cwd = String(projectPath || '').trim()
+  if (cwd) selectedAiCwd.value = cwd
+  showAiProjectPicker.value = false
+
+  const cmd = String(activeAiProfile.value?.startupCommand || '').trim()
+  if (!cmd) {
+    window.monarcoToast?.warning?.('Perfil sem comando de inicialização')
+    return
+  }
+
+  isStartingAiCli.value = true
+  try {
+    const terminalId = await createAiTerminalSession(cwd ? { cwd, autoFocus: true } : { autoFocus: true })
+    if (!terminalId) return
+    window.monarco?.terminal?.write?.(terminalId, cmd + '\n')
+  } finally {
+    isStartingAiCli.value = false
+  }
+}
+
 async function loadWorkspaceFoldersForAi() {
   try {
     const info = await window.monarco?.workspace?.getFolders?.()
@@ -1149,6 +1201,18 @@ async function loadWorkspaceFoldersForAi() {
     workspaceFolderOptions.value = []
     if (!selectedAiCwd.value) selectedAiCwd.value = ''
   }
+}
+
+function applyWorkspaceFoldersInfo(info) {
+  const folders = Array.isArray(info?.folders) ? info.folders : []
+  workspaceFolderOptions.value = folders.map((p) => ({ path: p, label: folderLabel(p) }))
+  const active = String(info?.activeFolder || '').trim()
+  if (active && folders.includes(active)) {
+    selectedAiCwd.value = active
+    return
+  }
+  if (selectedAiCwd.value && folders.includes(selectedAiCwd.value)) return
+  selectedAiCwd.value = folders[0] || ''
 }
 
 const filteredStoreApps = computed(() => {
@@ -1749,6 +1813,11 @@ onMounted(() => {
   if (window.monarco?.workspace?.getFolders) {
     loadWorkspaceFoldersForAi()
   }
+  if (window.monarco?.workspace?.onChanged) {
+    window.monarco.workspace.onChanged((info) => {
+      applyWorkspaceFoldersInfo(info)
+    })
+  }
   
   const handleClickOutside = (e) => {
     if (showModeMenu.value && !e.target.closest('.mode-selector')) {
@@ -2183,71 +2252,77 @@ function handleAiTerminalContextKeydown(e) {
 .ai-terminal-tabs {
   display: flex;
   align-items: center;
-  gap: 8px;
-  padding: 10px 12px;
+  gap: 6px;
+  padding: 6px 10px;
   border-bottom: 1px solid var(--border);
-  background: var(--panel);
+  background: transparent;
   overflow-x: auto;
 }
 
 .ai-terminal-tab {
   display: inline-flex;
   align-items: center;
-  gap: 10px;
-  padding: 8px 10px;
-  border: 1px solid rgba(255, 255, 255, 0.08);
-  border-radius: 10px;
-  background: rgba(255, 255, 255, 0.02);
-  color: var(--text);
+  gap: 8px;
+  padding: 6px 8px;
+  border: none;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--muted);
   cursor: pointer;
   white-space: nowrap;
-  min-width: 140px;
+  min-width: 0;
+  max-width: 260px;
   justify-content: space-between;
 }
 
 .ai-terminal-tab-main {
   display: inline-flex;
   align-items: baseline;
-  gap: 10px;
+  gap: 8px;
   min-width: 0;
 }
 
 .ai-terminal-tab:hover {
   background: rgba(255, 255, 255, 0.05);
+  color: var(--text);
 }
 
 .ai-terminal-tab.active {
-  border-color: rgba(0, 122, 204, 0.5);
   background: rgba(0, 122, 204, 0.12);
+  color: var(--text);
+  box-shadow: inset 0 -2px 0 rgba(0, 122, 204, 0.65);
 }
 
 .ai-terminal-tab-name {
   font-size: 12px;
-  font-weight: 600;
-  color: var(--text);
+  font-weight: 500;
+  color: currentColor;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 140px;
 }
 
 .ai-terminal-tab-meta {
   font-size: 11px;
   color: var(--muted);
-  max-width: 160px;
+  max-width: 140px;
   overflow: hidden;
   text-overflow: ellipsis;
+  opacity: 0.65;
 }
 
 .ai-terminal-tab-close {
-  width: 22px;
-  height: 22px;
+  width: 18px;
+  height: 18px;
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  border-radius: 8px;
+  border-radius: 6px;
   color: var(--muted);
   opacity: 0;
 }
 
-.ai-terminal-tab:hover .ai-terminal-tab-close,
-.ai-terminal-tab.active .ai-terminal-tab-close {
+.ai-terminal-tab:hover .ai-terminal-tab-close {
   opacity: 0.9;
 }
 
@@ -2873,6 +2948,119 @@ function handleAiTerminalContextKeydown(e) {
   border-top: 1px solid rgba(255, 255, 255, 0.06);
   font-size: 11px;
   color: var(--muted);
+}
+
+.project-picker-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.55);
+  backdrop-filter: blur(3px);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 10004;
+}
+
+.project-picker-modal {
+  width: 520px;
+  max-width: 92vw;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.5);
+  overflow: hidden;
+}
+
+.project-picker-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 14px;
+  border-bottom: 1px solid var(--border);
+}
+
+.project-picker-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.project-picker-close {
+  width: 28px;
+  height: 28px;
+  border: none;
+  background: transparent;
+  color: var(--muted);
+  font-size: 20px;
+  cursor: pointer;
+  border-radius: 8px;
+}
+
+.project-picker-close:hover {
+  background: rgba(255, 255, 255, 0.08);
+  color: var(--text);
+}
+
+.project-picker-content {
+  padding: 10px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  max-height: 55vh;
+  overflow: auto;
+}
+
+.project-picker-item {
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 10px 10px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.02);
+  color: var(--text);
+  text-align: left;
+  cursor: pointer;
+}
+
+.project-picker-item:hover {
+  background: rgba(255, 255, 255, 0.06);
+}
+
+.project-picker-name {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.project-picker-path {
+  font-size: 11px;
+  color: var(--muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.project-picker-footer {
+  padding: 10px 12px;
+  border-top: 1px solid var(--border);
+  display: flex;
+  justify-content: flex-end;
+}
+
+.project-picker-btn {
+  padding: 8px 12px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.03);
+  color: var(--text);
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.project-picker-btn:hover {
+  background: rgba(255, 255, 255, 0.06);
 }
 
 .profiles-btn {

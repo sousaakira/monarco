@@ -2934,6 +2934,19 @@ onMounted(async () => {
     })
   }
 
+  if (window.monarco?.workspace?.onChanged) {
+    window.monarco.workspace.onChanged(async (info) => {
+      const nextFolders = Array.isArray(info?.folders) ? info.folders : []
+      const nextActive = info?.activeFolder || nextFolders[0] || null
+      const sameFolders = JSON.stringify(nextFolders) === JSON.stringify(workspaceFolders.value)
+      const sameActive = nextActive === workspacePath.value
+      if (sameFolders && sameActive) return
+      workspaceFolders.value = nextFolders
+      workspacePath.value = nextActive
+      await refreshTree()
+    })
+  }
+
   // Carrega o último workspace automaticamente
   try {
     const lastWorkspace = await window.monarco.workspace.getLast()
