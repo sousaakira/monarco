@@ -26,7 +26,40 @@
         </button>
       </div>
     </div>
-    <div ref="terminalContainer" class="terminal-container"></div>
+    <div ref="terminalContainer" class="terminal-container" @contextmenu.prevent="openTerminalContextMenu"></div>
+    <div
+      v-if="terminalContextMenu.open"
+      class="terminal-context-overlay"
+      @pointerdown="closeTerminalContextMenu"
+      @contextmenu.prevent
+    >
+      <div
+        class="terminal-context-menu"
+        :style="{ left: terminalContextMenu.x + 'px', top: terminalContextMenu.y + 'px' }"
+        @pointerdown.stop
+      >
+        <button class="terminal-context-item" :disabled="!terminalContextMenu.hasSelection" @click="contextCopy">
+          <span class="terminal-context-left">
+            <svg class="terminal-context-icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <rect x="9" y="9" width="13" height="13" rx="2"></rect>
+              <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>
+            </svg>
+            <span>Copiar</span>
+          </span>
+          <span class="terminal-context-shortcut">Ctrl+Shift+C</span>
+        </button>
+        <button class="terminal-context-item" :disabled="!activeTerminalId" @click="contextPaste">
+          <span class="terminal-context-left">
+            <svg class="terminal-context-icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M19 21H10a2 2 0 0 1-2-2V7a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2z"></path>
+              <path d="M16 3h-1.18A2 2 0 0 0 13 2h-2a2 2 0 0 0-1.82 1H8a2 2 0 0 0-2 2v1h13V5a2 2 0 0 0-2-2z"></path>
+            </svg>
+            <span>Colar</span>
+          </span>
+          <span class="terminal-context-shortcut">Ctrl+Shift+V</span>
+        </button>
+      </div>
+    </div>
   </div>
 </template>
 
@@ -48,6 +81,13 @@ let activeFitAddon = null
 let resizeObserver = null
 let dataUnsubscribe = null
 let exitUnsubscribe = null
+
+const terminalContextMenu = ref({
+  open: false,
+  x: 0,
+  y: 0,
+  hasSelection: false
+})
 
 const termTheme = {
   background: '#1e1e1e',
@@ -113,6 +153,18 @@ async function createTerminal() {
     // Enviar input para o PTY
     term.xterm.onData((data) => {
       window.monarco.terminal.write(terminalId, data)
+    })
+
+    term.xterm.attachCustomKeyEventHandler((e) => {
+      if ((e.ctrlKey || e.metaKey) && e.shiftKey && (e.code === 'KeyC' || e.key?.toLowerCase() === 'c')) {
+        void copySelectionFromXterm(term.xterm)
+        return false
+      }
+      if ((e.ctrlKey || e.metaKey) && e.shiftKey && (e.code === 'KeyV' || e.key?.toLowerCase() === 'v')) {
+        void pasteTextToTerminalId(terminalId)
+        return false
+      }
+      return true
     })
 
     terminals.value.push(term)
@@ -195,6 +247,66 @@ function clearTerminal() {
   }
 }
 
+function openTerminalContextMenu(e) {
+  if (!activeXterm) return
+  terminalContextMenu.value = {
+    open: true,
+    x: e.clientX,
+    y: e.clientY,
+    hasSelection: !!(activeXterm.getSelection?.() || '')
+  }
+}
+
+function closeTerminalContextMenu() {
+  terminalContextMenu.value.open = false
+}
+
+async function contextCopy() {
+  await copyActiveSelection()
+  closeTerminalContextMenu()
+}
+
+async function contextPaste() {
+  await pasteToActiveTerminal()
+  closeTerminalContextMenu()
+}
+
+async function copySelectionFromXterm(xterm) {
+  if (!xterm) return
+  const selection = xterm.getSelection?.() || ''
+  if (!selection) {
+    window.monarcoToast?.info?.('Nenhuma seleção para copiar')
+    return
+  }
+  try {
+    await navigator.clipboard.writeText(selection)
+    window.monarcoToast?.success?.('Copiado!')
+  } catch (e) {
+    window.monarcoToast?.error?.('Falha ao copiar', { description: e?.message })
+  }
+}
+
+async function pasteTextToTerminalId(terminalId) {
+  if (!terminalId) return
+  try {
+    const text = await navigator.clipboard.readText()
+    if (!text) return
+    window.monarco?.terminal?.write?.(terminalId, text)
+  } catch (e) {
+    window.monarcoToast?.error?.('Falha ao colar', { description: e?.message })
+  }
+}
+
+async function copyActiveSelection() {
+  await copySelectionFromXterm(activeXterm)
+}
+
+async function pasteToActiveTerminal() {
+  if (!activeTerminalId.value) return
+  await pasteTextToTerminalId(activeTerminalId.value)
+  activeXterm?.focus?.()
+}
+
 function fitTerminal() {
   if (activeFitAddon && activeXterm) {
     activeFitAddon.fit()
@@ -234,9 +346,12 @@ onMounted(async () => {
     dataUnsubscribe = window.monarco.terminal.onData(handleTerminalData)
     exitUnsubscribe = window.monarco.terminal.onExit(handleTerminalExit)
   }
+
+  document.addEventListener('keydown', handleContextMenuKeydown)
 })
 
 onUnmounted(() => {
+  document.removeEventListener('keydown', handleContextMenuKeydown)
   // Limpar observer
   if (resizeObserver) {
     resizeObserver.disconnect()
@@ -264,6 +379,14 @@ defineExpose({
   fit: fitTerminal,
   createTerminal
 })
+
+function handleContextMenuKeydown(e) {
+  if (!terminalContextMenu.value.open) return
+  if (e.key === 'Escape') {
+    e.preventDefault()
+    closeTerminalContextMenu()
+  }
+}
 </script>
 
 <style scoped>
@@ -396,11 +519,77 @@ defineExpose({
   color: var(--text);
 }
 
+.terminal-action-btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
 .terminal-container {
   flex: 1;
   min-height: 0;
   padding: 8px;
   overflow: hidden;
+}
+
+.terminal-context-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 90;
+}
+
+.terminal-context-menu {
+  position: fixed;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 6px;
+  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.35);
+  min-width: 160px;
+}
+
+.terminal-context-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  width: 100%;
+  padding: 8px 10px;
+  border: none;
+  background: transparent;
+  color: var(--text);
+  font-size: 13px;
+  text-align: left;
+  cursor: pointer;
+  border-radius: 8px;
+  transition: background 0.1s ease, color 0.1s ease;
+}
+
+.terminal-context-item:hover:not(:disabled) {
+  background: var(--list-hover);
+}
+
+.terminal-context-item:disabled {
+  color: var(--muted);
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+
+.terminal-context-left {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.terminal-context-icon {
+  color: var(--muted);
+}
+
+.terminal-context-item:hover:not(:disabled) .terminal-context-icon {
+  color: var(--text);
+}
+
+.terminal-context-shortcut {
+  font-size: 11px;
+  color: var(--muted);
 }
 
 /* Ajustes para xterm */

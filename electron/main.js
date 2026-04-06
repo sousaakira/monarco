@@ -1,7 +1,7 @@
 import { app, BrowserWindow, dialog, ipcMain, screen, Menu } from 'electron'
 import path from 'node:path'
 import fs from 'node:fs/promises'
-import { existsSync } from 'node:fs'
+import { existsSync, watch } from 'node:fs'
 import os from 'node:os'
 import { exec } from 'node:child_process'
 import { promisify } from 'node:util'
@@ -71,9 +71,119 @@ let mainWindow = null // Referência global para a janela principal
 // Terminal PTY instances
 const terminals = new Map()
 
+// Workspace FS watchers (to detect external changes, e.g. terminal AI)
+let workspaceWatchRoot = null
+let workspaceWatchers = new Map()
+let workspaceWatchDebounce = new Map()
+
+function shouldIgnoreWorkspacePath(p) {
+  const normalized = p.replaceAll('\\', '/')
+  const parts = normalized.split('/')
+  return parts.includes('.git') || parts.includes('node_modules') || parts.includes('dist') || parts.includes('build') || parts.includes('out') || parts.includes('dist-electron')
+}
+
+function stopWorkspaceWatcher() {
+  for (const w of workspaceWatchers.values()) {
+    try { w.close() } catch {}
+  }
+  workspaceWatchers = new Map()
+  workspaceWatchRoot = null
+  for (const t of workspaceWatchDebounce.values()) {
+    clearTimeout(t)
+  }
+  workspaceWatchDebounce = new Map()
+}
+
+function emitFsChanged(changeInfo) {
+  const window = BrowserWindow.getAllWindows()[0]
+  if (!window) return
+  window.webContents.send('fs:changed', changeInfo)
+}
+
+async function addWorkspaceWatchDir(dirPath) {
+  if (!workspaceWatchRoot) return
+  if (workspaceWatchers.has(dirPath)) return
+  if (shouldIgnoreWorkspacePath(dirPath)) return
+  try {
+    const w = watch(dirPath, { persistent: false }, (eventType, filename) => {
+      if (!workspaceWatchRoot) return
+      if (!filename) {
+        emitFsChanged({ type: 'modified', path: dirPath })
+        return
+      }
+      const name = typeof filename === 'string' ? filename : filename.toString()
+      const fullPath = path.resolve(dirPath, name)
+      if (!fullPath.startsWith(workspaceWatchRoot)) return
+      if (shouldIgnoreWorkspacePath(fullPath)) return
+
+      const key = fullPath
+      const existing = workspaceWatchDebounce.get(key)
+      if (existing) clearTimeout(existing)
+      workspaceWatchDebounce.set(
+        key,
+        setTimeout(async () => {
+          workspaceWatchDebounce.delete(key)
+          try {
+            const st = await fs.stat(fullPath)
+            if (st.isDirectory()) {
+              if (eventType === 'rename') {
+                await addWorkspaceWatchDir(fullPath)
+                try {
+                  const entries = await fs.readdir(fullPath, { withFileTypes: true })
+                  for (const ent of entries) {
+                    if (ent.isDirectory()) {
+                      await addWorkspaceWatchDir(path.join(fullPath, ent.name))
+                    }
+                  }
+                } catch {}
+              }
+              return
+            }
+            emitFsChanged({ type: 'modified', path: fullPath })
+          } catch {
+            emitFsChanged({ type: 'deleted', path: fullPath })
+          }
+        }, 120)
+      )
+    })
+    workspaceWatchers.set(dirPath, w)
+  } catch (e) {
+    log('error', 'workspace:watch', 'Falha ao criar watcher', { dirPath, error: e?.message })
+  }
+}
+
+async function walkAndWatch(dirPath) {
+  if (!workspaceWatchRoot) return
+  if (shouldIgnoreWorkspacePath(dirPath)) return
+  await addWorkspaceWatchDir(dirPath)
+  let entries = []
+  try {
+    entries = await fs.readdir(dirPath, { withFileTypes: true })
+  } catch {
+    return
+  }
+  for (const ent of entries) {
+    if (!ent.isDirectory()) continue
+    const child = path.join(dirPath, ent.name)
+    await walkAndWatch(child)
+  }
+}
+
+async function startWorkspaceWatcher(workspacePath) {
+  if (!workspacePath) return
+  const root = path.resolve(workspacePath)
+  if (workspaceWatchRoot === root) return
+  stopWorkspaceWatcher()
+  workspaceWatchRoot = root.endsWith(path.sep) ? root : root + path.sep
+  await walkAndWatch(root)
+  log('info', 'workspace:watch', 'Watcher iniciado', { root })
+}
+
 // ===== Config Management =====
 const CONFIG_DIR_NAME = '.monarco'
 const SETTINGS_FILE_NAME = 'settings.json'
+const CLI_TOOLS_DIR_NAME = 'cli'
+const CLI_STORE_RAW_URL = 'https://raw.githubusercontent.com/sousaakira/monarco/main/cli-store.json'
 
 const defaultSettings = {
   editor: {
@@ -91,7 +201,32 @@ const defaultSettings = {
     fontSize: 13,
     fontFamily: 'monospace',
     cursorBlink: true,
-    cursorStyle: 'block'
+    cursorStyle: 'block',
+    activeProfileId: 'openclaude-openrouter',
+    profiles: [
+      {
+        id: 'openclaude-openrouter',
+        name: 'OpenClaude (OpenRouter)',
+        startupCommand: 'openclaude',
+        env: {
+          CLAUDE_CODE_USE_OPENAI: '1',
+          OPENAI_BASE_URL: 'https://openrouter.ai/api/v1',
+          OPENAI_API_KEY: '',
+          OPENAI_MODEL: 'qwen/qwen3.6-plus:free'
+        }
+      },
+      {
+        id: 'openclaude-local',
+        name: 'OpenClaude (Local)',
+        startupCommand: 'openclaude',
+        env: {
+          CLAUDE_CODE_USE_OPENAI: '1',
+          OPENAI_BASE_URL: 'http://192.168.1.19:11434/v1',
+          OPENAI_API_KEY: 'sk-fake',
+          OPENAI_MODEL: 'glm-5:cloud'
+        }
+      }
+    ]
   },
   panels: {
     aiChat: { open: false, width: 400 },
@@ -117,6 +252,21 @@ function getSettingsPath() {
   return path.join(getConfigDir(), SETTINGS_FILE_NAME)
 }
 
+function getCliToolsDir() {
+  return path.join(getConfigDir(), CLI_TOOLS_DIR_NAME)
+}
+
+function getCliToolsPackageJsonPath() {
+  return path.join(getCliToolsDir(), 'package.json')
+}
+
+function getCliToolsBinDir() {
+  const base = getCliToolsDir()
+  return process.platform === 'win32'
+    ? path.join(base, 'node_modules', '.bin')
+    : path.join(base, 'node_modules', '.bin')
+}
+
 async function ensureConfigDir() {
   const configDir = getConfigDir()
   try {
@@ -125,6 +275,20 @@ async function ensureConfigDir() {
     await fs.mkdir(configDir, { recursive: true })
   }
   return configDir
+}
+
+async function ensureCliToolsProject() {
+  await ensureConfigDir()
+  const dir = getCliToolsDir()
+  try {
+    await fs.mkdir(dir, { recursive: true })
+  } catch {}
+  const pkgPath = getCliToolsPackageJsonPath()
+  if (!existsSync(pkgPath)) {
+    const content = JSON.stringify({ name: 'monarco-cli', private: true }, null, 2)
+    await fs.writeFile(pkgPath, content, 'utf8')
+  }
+  return dir
 }
 
 async function loadSettings() {
@@ -156,12 +320,119 @@ async function loadSettings() {
   }
 }
 
-async function saveSettings(settings) {
+function mergeSettings(current, patch) {
+  const safeCurrent = current && typeof current === 'object' ? current : { ...defaultSettings }
+  const safePatch = patch && typeof patch === 'object' ? patch : {}
+  const base = { ...safeCurrent, ...safePatch }
+
+  const mergedTerminal = safePatch.terminal
+    ? {
+        ...safeCurrent.terminal,
+        ...safePatch.terminal,
+        profiles:
+          safePatch.terminal.profiles !== undefined
+            ? safePatch.terminal.profiles
+            : safeCurrent.terminal?.profiles,
+        activeProfileId:
+          safePatch.terminal.activeProfileId !== undefined
+            ? safePatch.terminal.activeProfileId
+            : safeCurrent.terminal?.activeProfileId
+      }
+    : safeCurrent.terminal
+
+  const mergedPanels = safePatch.panels
+    ? {
+        ...(safeCurrent.panels || {}),
+        ...(safePatch.panels || {}),
+        aiChat: { ...(safeCurrent.panels?.aiChat || {}), ...(safePatch.panels?.aiChat || {}) },
+        terminal: { ...(safeCurrent.panels?.terminal || {}), ...(safePatch.panels?.terminal || {}) },
+        sidebar: { ...(safeCurrent.panels?.sidebar || {}), ...(safePatch.panels?.sidebar || {}) }
+      }
+    : safeCurrent.panels
+
+  return {
+    ...base,
+    editor: safePatch.editor ? { ...safeCurrent.editor, ...safePatch.editor } : safeCurrent.editor,
+    appearance: safePatch.appearance ? { ...safeCurrent.appearance, ...safePatch.appearance } : safeCurrent.appearance,
+    terminal: mergedTerminal,
+    panels: mergedPanels,
+    ai: safePatch.ai ? { ...safeCurrent.ai, ...safePatch.ai } : safeCurrent.ai,
+    recentWorkspaces:
+      safePatch.recentWorkspaces !== undefined ? safePatch.recentWorkspaces : safeCurrent.recentWorkspaces
+  }
+}
+
+async function saveSettings(settingsPatch) {
   await ensureConfigDir()
   const settingsPath = getSettingsPath()
-  const content = JSON.stringify(settings, null, 2)
+  const current = await loadSettings()
+  const merged = mergeSettings(current, settingsPatch)
+  const content = JSON.stringify(merged, null, 2)
   await fs.writeFile(settingsPath, content, 'utf8')
-  return settings
+  return merged
+}
+
+async function checkNodeAndNpm() {
+  try {
+    const nodeRes = await execAsync('node -v')
+    const npmRes = await execAsync('npm -v')
+    return {
+      ok: true,
+      nodeVersion: String(nodeRes.stdout || '').trim(),
+      npmVersion: String(npmRes.stdout || '').trim()
+    }
+  } catch (e) {
+    return { ok: false, nodeVersion: null, npmVersion: null, error: e?.message || String(e) }
+  }
+}
+
+async function fetchCliStoreCatalog() {
+  try {
+    const res = await fetch(CLI_STORE_RAW_URL, { method: 'GET' })
+    if (!res.ok) throw new Error(`HTTP ${res.status}`)
+    const json = await res.json()
+    return { ok: true, source: 'remote', catalog: json }
+  } catch (e) {
+    try {
+      const localPath = path.join(app.getAppPath(), 'cli-store.json')
+      const content = await fs.readFile(localPath, 'utf8')
+      const json = JSON.parse(content)
+      return { ok: true, source: 'local', catalog: json }
+    } catch (e2) {
+      return { ok: false, error: e?.message || String(e) }
+    }
+  }
+}
+
+async function npmListInstalled() {
+  await ensureCliToolsProject()
+  const dir = getCliToolsDir()
+  try {
+    const { stdout } = await execAsync(`npm ls --json --depth=0 --prefix "${dir}"`)
+    const parsed = JSON.parse(stdout || '{}')
+    const deps = parsed.dependencies || {}
+    return Object.keys(deps).map((name) => ({ name, version: deps[name]?.version || null }))
+  } catch {
+    return []
+  }
+}
+
+async function npmInstallPackage(pkg) {
+  const check = await checkNodeAndNpm()
+  if (!check.ok) throw new Error(check.error || 'Node.js/npm não disponível')
+  await ensureCliToolsProject()
+  const dir = getCliToolsDir()
+  await execAsync(`npm install --no-fund --no-audit --silent --prefix "${dir}" "${pkg}"`)
+  return { ok: true }
+}
+
+async function npmUninstallPackage(pkg) {
+  const check = await checkNodeAndNpm()
+  if (!check.ok) throw new Error(check.error || 'Node.js/npm não disponível')
+  await ensureCliToolsProject()
+  const dir = getCliToolsDir()
+  await execAsync(`npm uninstall --no-fund --no-audit --silent --prefix "${dir}" "${pkg}"`)
+  return { ok: true }
 }
 
 /**
@@ -408,6 +679,7 @@ app.whenReady().then(async () => {
       
       // Salva nos recentes
       if (selected) {
+        await startWorkspaceWatcher(selected)
         await addRecentWorkspace(selected)
         log('info', 'ipc:workspace:select', 'Workspace adicionado aos recentes')
         
@@ -445,6 +717,7 @@ app.whenReady().then(async () => {
       }
       
       currentWorkspacePath = workspacePath
+      await startWorkspaceWatcher(workspacePath)
       await addRecentWorkspace(workspacePath)
       
       // Configura o agente de IA
@@ -1014,6 +1287,15 @@ app.whenReady().then(async () => {
       const cwd = options.cwd || currentWorkspacePath || os.homedir()
       const cols = options.cols || 80
       const rows = options.rows || 24
+      const envOverrides = options?.env && typeof options.env === 'object' ? options.env : null
+      const safeEnvOverrides = {}
+      if (envOverrides) {
+        for (const [key, value] of Object.entries(envOverrides)) {
+          if (typeof key !== 'string' || key.trim().length === 0) continue
+          if (typeof value !== 'string') continue
+          safeEnvOverrides[key] = value
+        }
+      }
       
       const terminalId = `term_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`
       log('verbose', 'ipc:terminal:create', 'Terminal ID gerado', { id: terminalId, shell })
@@ -1026,7 +1308,8 @@ app.whenReady().then(async () => {
         env: {
           ...process.env,
           TERM: 'xterm-256color',
-          COLORTERM: 'truecolor'
+          COLORTERM: 'truecolor',
+          ...safeEnvOverrides
         }
       })
       
@@ -1121,6 +1404,36 @@ app.whenReady().then(async () => {
     const configDir = getConfigDir()
     await ensureConfigDir()
     shell.openPath(configDir)
+  })
+
+  // ===== CLI Store Handlers =====
+  ipcMain.handle('cliStore:checkNode', async () => {
+    return await checkNodeAndNpm()
+  })
+
+  ipcMain.handle('cliStore:fetchCatalog', async () => {
+    return await fetchCliStoreCatalog()
+  })
+
+  ipcMain.handle('cliStore:listInstalled', async () => {
+    return await npmListInstalled()
+  })
+
+  ipcMain.handle('cliStore:install', async (_evt, pkg) => {
+    if (typeof pkg !== 'string' || pkg.trim().length === 0) throw new Error('Invalid package')
+    await npmInstallPackage(pkg.trim())
+    return await npmListInstalled()
+  })
+
+  ipcMain.handle('cliStore:uninstall', async (_evt, pkg) => {
+    if (typeof pkg !== 'string' || pkg.trim().length === 0) throw new Error('Invalid package')
+    await npmUninstallPackage(pkg.trim())
+    return await npmListInstalled()
+  })
+
+  ipcMain.handle('cliStore:getBinPath', async () => {
+    await ensureCliToolsProject()
+    return getCliToolsBinDir()
   })
 
   // ===== AI Agent Handlers =====
@@ -1350,5 +1663,6 @@ app.whenReady().then(async () => {
 })
 
 app.on('window-all-closed', () => {
+  stopWorkspaceWatcher()
   if (process.platform !== 'darwin') app.quit()
 })

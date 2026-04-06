@@ -1212,6 +1212,7 @@ watch(activeTab, (newTab, oldTab) => {
     
     // Registra event handlers
     monacoInstance.onDidChangeModelContent(() => {
+      if (suppressMonacoDirty.value) return
       if (newTab) {
         newTab.value = monacoInstance.getValue()
         newTab.dirty = true
@@ -1662,6 +1663,7 @@ const uiSettingsDraft = ref({ windowControlsPosition: 'left' })
 const editorSettings = ref({ fontSize: 14, wordWrap: 'off', tabSize: 2, minimap: true, lineNumbers: 'on' })
 const uiSettings = ref({ windowControlsPosition: 'left', theme: 'dark' })
 const terminalSettings = ref({ fontSize: 13, fontFamily: 'monospace', cursorBlink: true, cursorStyle: 'block' })
+const suppressMonacoDirty = ref(false)
 
 const editorOptions = computed(() => ({
   fontSize: editorSettings.value.fontSize,
@@ -2826,23 +2828,27 @@ onMounted(async () => {
       await refreshTree()
       
       // Se o arquivo modificado está aberto, recarrega
-      if (changeInfo.type === 'modified' && changeInfo.path) {
+      if ((changeInfo.type === 'modified' || changeInfo.type === 'created') && changeInfo.path) {
         const openTab = tabs.value.find(t => t.path === changeInfo.path)
         if (openTab && !openTab.dirty) {
           try {
             const content = await window.monarco.readTextFile(changeInfo.path)
             openTab.value = content
+            openTab.dirty = false
             
             // Atualiza Monaco se for a aba ativa
             if (activePath.value === changeInfo.path && monacoInstance) {
               const currentPosition = monacoInstance.getPosition()
+              suppressMonacoDirty.value = true
               monacoInstance.setValue(content)
+              suppressMonacoDirty.value = false
               if (currentPosition) {
                 monacoInstance.setPosition(currentPosition)
               }
             }
           } catch (e) {
             console.error('Erro ao recarregar arquivo:', e)
+            suppressMonacoDirty.value = false
           }
         }
       }

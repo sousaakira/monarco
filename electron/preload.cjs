@@ -80,6 +80,16 @@ contextBridge.exposeInMainWorld('monarco', {
     getConfigPath: () => ipcRenderer.invoke('settings:getConfigPath'),
     openConfigDir: () => ipcRenderer.invoke('settings:openConfigDir')
   },
+
+  // CLI Store APIs
+  cliStore: {
+    checkNode: () => ipcRenderer.invoke('cliStore:checkNode'),
+    fetchCatalog: () => ipcRenderer.invoke('cliStore:fetchCatalog'),
+    listInstalled: () => ipcRenderer.invoke('cliStore:listInstalled'),
+    install: (pkg) => ipcRenderer.invoke('cliStore:install', pkg),
+    uninstall: (pkg) => ipcRenderer.invoke('cliStore:uninstall', pkg),
+    getBinPath: () => ipcRenderer.invoke('cliStore:getBinPath')
+  },
   
   // AI Agent APIs
   ai: {
