@@ -731,7 +731,7 @@ function toggleAutocomplete() {
 }
 
 async function refreshTree() {
-  if (!workspacePath.value) return
+  if (!workspacePath.value && workspaceFolders.value.length === 0) return
   lastError.value = null
   try {
     const selectedPath = selectedNode.value?.path ?? null
@@ -761,8 +761,32 @@ async function refreshTree() {
   }
 }
 
+function getWorkspaceRootForPath(filePath) {
+  const p = String(filePath || '')
+  const roots = workspaceFolders.value || []
+  let best = null
+  for (const r of roots) {
+    const prefix = r.endsWith('/') ? r : r + '/'
+    if (p === r || p.startsWith(prefix)) {
+      if (!best || r.length > best.length) best = r
+    }
+  }
+  return best
+}
+
+function isWorkspaceRootPath(p) {
+  return workspaceFolders.value.some((r) => r === p) || p === '__workspace__'
+}
+
 function onSelectNode(node) {
   selectedNode.value = node
+  if (node?.kind === 'dir') {
+    const isRoot = workspaceFolders.value.some((p) => p === node.path)
+    if (isRoot && workspacePath.value !== node.path) {
+      workspacePath.value = node.path
+      window.monarco?.workspace?.setActiveFolder?.(node.path)
+    }
+  }
 }
 
 const contextMenu = ref({ open: false, x: 0, y: 0, node: null })
@@ -842,17 +866,39 @@ function onContextMenuCopyPath() {
 function onContextMenuCopyRelativePath() {
   const n = contextMenu.value.node
   closeContextMenu()
-  if (!n || !workspacePath.value) return
-  const relativePath = n.path.replace(workspacePath.value + '/', '')
+  if (!n) return
+  const root = getWorkspaceRootForPath(n.path) || workspacePath.value
+  if (!root) return
+  const prefix = root.endsWith('/') ? root : root + '/'
+  const relativePath = n.path.startsWith(prefix) ? n.path.slice(prefix.length) : n.path
   navigator.clipboard.writeText(relativePath)
 }
 
 function getSelectedDirPath() {
-  if (!selectedNode.value) return workspacePath.value
-  if (selectedNode.value.kind === 'dir') return selectedNode.value.path
-  return selectedNode.value.path.split('/').slice(0, -1).join('/') || workspacePath.value
+  if (!selectedNode.value) return workspacePath.value || workspaceFolders.value[0] || null
+  if (selectedNode.value.kind === 'dir') {
+    if (selectedNode.value.path === '__workspace__') return workspacePath.value || workspaceFolders.value[0] || null
+    return selectedNode.value.path
+  }
+  return selectedNode.value.path.split('/').slice(0, -1).join('/') || workspacePath.value || workspaceFolders.value[0] || null
 }
 
+async function onContextMenuRemoveRoot() {
+  const n = contextMenu.value.node
+  closeContextMenu()
+  if (!n || n.kind !== 'dir') return
+  try {
+    await window.monarco.workspace.removeFolder(n.path)
+    const info = await window.monarco.workspace.getFolders()
+    workspaceFolders.value = info?.folders || []
+    workspacePath.value = info?.activeFolder || workspaceFolders.value[0] || null
+    await refreshTree()
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e)
+    console.error('removeRoot failed', e)
+    lastError.value = msg
+  }
+}
 function isSameOrInside(targetPath, basePath) {
   if (targetPath === basePath) return true
   const prefix = basePath.endsWith('/') ? basePath : basePath + '/'
@@ -997,6 +1043,7 @@ async function confirmCrudDialog() {
 }
 
 const workspacePath = ref(null)
+const workspaceFolders = ref([])
 const tree = ref(null)
 
 const lastError = ref(null)
@@ -1053,6 +1100,9 @@ function handleMenuAction(action) {
       break
     case 'openFolder':
       pickWorkspace()
+      break
+    case 'addFolder':
+      addWorkspaceFolder()
       break
     case 'toggleAIChat':
       toggleAIChat()
@@ -1859,8 +1909,8 @@ async function saveSettings() {
 
 const activeBreadcrumb = computed(() => {
   if (!activeTab.value) return null
-  if (!workspacePath.value) return activeTab.value.path
-  const ws = workspacePath.value
+  const ws = getWorkspaceRootForPath(activeTab.value.path) || workspacePath.value
+  if (!ws) return activeTab.value.path
   if (activeTab.value.path === ws) return ws
   const prefix = ws.endsWith('/') ? ws : ws + '/'
   if (activeTab.value.path.startsWith(prefix)) return activeTab.value.path.slice(prefix.length)
@@ -1897,7 +1947,9 @@ async function openWorkspace(path) {
         activePath.value = null
       }
       
-      workspacePath.value = openedPath
+      const folderInfo = await window.monarco.workspace.getFolders()
+      workspaceFolders.value = folderInfo?.folders || [openedPath]
+      workspacePath.value = folderInfo?.activeFolder || openedPath
       await refreshTree()
       
       const folderName = openedPath.split(/[/\\]/).pop() || openedPath
@@ -1906,6 +1958,20 @@ async function openWorkspace(path) {
   } catch (e) {
     console.error('Failed to open workspace:', e)
     window.monarcoToast?.error(`Erro ao abrir workspace: ${e.message}`)
+  }
+}
+
+async function addWorkspaceFolder() {
+  lastError.value = null
+  try {
+    const info = await window.monarco.workspace.addFolder()
+    workspaceFolders.value = info?.folders || workspaceFolders.value
+    workspacePath.value = info?.activeFolder || workspacePath.value
+    await refreshTree()
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e)
+    console.error('addWorkspaceFolder failed', e)
+    lastError.value = msg
   }
 }
 
@@ -1926,6 +1992,11 @@ async function pickWorkspace() {
 async function openFile(filePath) {
   lastError.value = null
   try {
+    const root = getWorkspaceRootForPath(filePath)
+    if (root && workspacePath.value !== root) {
+      workspacePath.value = root
+      window.monarco?.workspace?.setActiveFolder?.(root)
+    }
     const existing = tabs.value.find((t) => t.path === filePath)
     if (existing) {
       activePath.value = existing.path
@@ -3034,21 +3105,6 @@ onUnmounted(() => {
       <!-- Explorer View -->
       <div v-show="activeView === 'explorer'" class="sidebar-content">
         <div class="sidebarHeader">
-          <button @click="pickWorkspace" title="Open folder">
-            <span class="icon-folder-open"></span>
-          </button>
-          <button :disabled="!workspacePath" @click="createNewFile" title="New File">
-            <span class="icon-file-plus"></span>
-          </button>
-          <button :disabled="!workspacePath" @click="createNewFolder" title="New Folder">
-            <span class="icon-folder-plus"></span>
-          </button>
-          <button :disabled="!selectedNode || selectedNode.path === workspacePath" @click="renameSelected" title="Rename">
-            <span class="icon-pen-to-square"></span>
-          </button>
-          <button :disabled="!selectedNode || selectedNode.path === workspacePath" @click="deleteSelected" title="Delete">
-            <span class="icon-trash"></span>
-          </button>
           <button @click="toggleAIChat" title="IA Chat (Ctrl+L)" :class="{ active: isAIChatOpen }">
             <span class="icon-comment-dots"></span>
           </button>
@@ -3064,15 +3120,30 @@ onUnmounted(() => {
               Select a folder to start.
             </div>
             <div v-else>
-              <FileTree
-                :node="tree"
-                :selectedPath="selectedNode?.path ?? null"
-                :expanded-map="expandedMap"
-                @open="openFile"
-                @select="onSelectNode"
-                @toggle="toggleDir"
-                @context="openContextMenu"
-              />
+              <template v-if="tree.path === '__workspace__' && Array.isArray(tree.children)">
+                <FileTree
+                  v-for="child in tree.children"
+                  :key="child.path"
+                  :node="child"
+                  :selectedPath="selectedNode?.path ?? null"
+                  :expanded-map="expandedMap"
+                  @open="openFile"
+                  @select="onSelectNode"
+                  @toggle="toggleDir"
+                  @context="openContextMenu"
+                />
+              </template>
+              <template v-else>
+                <FileTree
+                  :node="tree"
+                  :selectedPath="selectedNode?.path ?? null"
+                  :expanded-map="expandedMap"
+                  @open="openFile"
+                  @select="onSelectNode"
+                  @toggle="toggleDir"
+                  @context="openContextMenu"
+                />
+              </template>
             </div>
           </div>
         </div>
@@ -3497,6 +3568,7 @@ onUnmounted(() => {
       :node="contextMenu.node"
       :root-path="workspacePath"
       :has-tree="!!tree"
+      :is-root="isWorkspaceRootPath(contextMenu.node?.path)"
       @close="closeContextMenu"
       @open="onContextMenuOpen"
       @refresh="onContextMenuRefresh"
@@ -3506,6 +3578,7 @@ onUnmounted(() => {
       @delete="onContextMenuDelete"
       @copy-path="onContextMenuCopyPath"
       @copy-relative-path="onContextMenuCopyRelativePath"
+      @remove-root="onContextMenuRemoveRoot"
     />
 
     <main class="main">

@@ -58,6 +58,15 @@
       <div class="context-menu-sep" />
 
       <button
+        class="context-menu-item context-menu-item--danger"
+        :disabled="!isRoot"
+        @click="emit('removeRoot')"
+      >
+        Remover Pasta do Workspace
+      </button>
+      <div class="context-menu-sep" />
+
+      <button
         class="context-menu-item"
         :disabled="!node"
         @click="emit('copyPath')"
@@ -106,14 +115,14 @@ const props = defineProps({
   hasTree: {
     type: Boolean,
     default: false
-  }
+  },
+  isRoot: {
+    type: Boolean,
+    default: false
+  },
 })
 
-const emit = defineEmits(['close', 'open', 'refresh', 'newFile', 'newFolder', 'rename', 'delete', 'copyPath', 'copyRelativePath'])
-
-const isRoot = computed(() => {
-  return props.node?.path === props.rootPath
-})
+const emit = defineEmits(['close', 'open', 'refresh', 'newFile', 'newFolder', 'rename', 'delete', 'copyPath', 'copyRelativePath', 'removeRoot'])
 
 function close() {
   emit('close')

@@ -66,13 +66,15 @@ const log = (level, context, message, data = null) => {
 }
 
 let currentWorkspacePath = null
+let workspaceFolders = []
 let mainWindow = null // Referência global para a janela principal
+let aiAgent = null // Instância global do agente de IA
 
 // Terminal PTY instances
 const terminals = new Map()
 
 // Workspace FS watchers (to detect external changes, e.g. terminal AI)
-let workspaceWatchRoot = null
+let workspaceWatchRoots = []
 let workspaceWatchers = new Map()
 let workspaceWatchDebounce = new Map()
 
@@ -87,7 +89,7 @@ function stopWorkspaceWatcher() {
     try { w.close() } catch {}
   }
   workspaceWatchers = new Map()
-  workspaceWatchRoot = null
+  workspaceWatchRoots = []
   for (const t of workspaceWatchDebounce.values()) {
     clearTimeout(t)
   }
@@ -101,19 +103,19 @@ function emitFsChanged(changeInfo) {
 }
 
 async function addWorkspaceWatchDir(dirPath) {
-  if (!workspaceWatchRoot) return
+  if (!workspaceWatchRoots.length) return
   if (workspaceWatchers.has(dirPath)) return
   if (shouldIgnoreWorkspacePath(dirPath)) return
   try {
     const w = watch(dirPath, { persistent: false }, (eventType, filename) => {
-      if (!workspaceWatchRoot) return
+      if (!workspaceWatchRoots.length) return
       if (!filename) {
         emitFsChanged({ type: 'modified', path: dirPath })
         return
       }
       const name = typeof filename === 'string' ? filename : filename.toString()
       const fullPath = path.resolve(dirPath, name)
-      if (!fullPath.startsWith(workspaceWatchRoot)) return
+      if (!workspaceWatchRoots.some((r) => fullPath === r.slice(0, -1) || fullPath.startsWith(r))) return
       if (shouldIgnoreWorkspacePath(fullPath)) return
 
       const key = fullPath
@@ -153,7 +155,7 @@ async function addWorkspaceWatchDir(dirPath) {
 }
 
 async function walkAndWatch(dirPath) {
-  if (!workspaceWatchRoot) return
+  if (!workspaceWatchRoots.length) return
   if (shouldIgnoreWorkspacePath(dirPath)) return
   await addWorkspaceWatchDir(dirPath)
   let entries = []
@@ -169,14 +171,23 @@ async function walkAndWatch(dirPath) {
   }
 }
 
-async function startWorkspaceWatcher(workspacePath) {
-  if (!workspacePath) return
-  const root = path.resolve(workspacePath)
-  if (workspaceWatchRoot === root) return
+async function startWorkspaceWatcher(workspacePaths) {
+  const list = Array.isArray(workspacePaths) ? workspacePaths : [workspacePaths]
+  const roots = list
+    .filter(Boolean)
+    .map((p) => path.resolve(p))
+    .map((p) => (p.endsWith(path.sep) ? p : p + path.sep))
+  if (!roots.length) return
+  const same =
+    workspaceWatchRoots.length === roots.length &&
+    workspaceWatchRoots.every((r, idx) => r === roots[idx])
+  if (same) return
   stopWorkspaceWatcher()
-  workspaceWatchRoot = root.endsWith(path.sep) ? root : root + path.sep
-  await walkAndWatch(root)
-  log('info', 'workspace:watch', 'Watcher iniciado', { root })
+  workspaceWatchRoots = roots
+  for (const root of roots) {
+    await walkAndWatch(root.slice(0, -1))
+  }
+  log('info', 'workspace:watch', 'Watcher iniciado', { roots })
 }
 
 // ===== Config Management =====
@@ -241,6 +252,10 @@ const defaultSettings = {
     temperature: 0.2,
     maxTokens: 1024
   },
+  workspace: {
+    folders: [],
+    activeFolder: ''
+  },
   recentWorkspaces: [] // Lista de workspaces recentes (máx 10)
 }
 
@@ -297,8 +312,10 @@ async function loadSettings() {
     await fs.access(settingsPath)
     const content = await fs.readFile(settingsPath, 'utf8')
     const parsed = JSON.parse(content)
+    const base = { ...defaultSettings, ...parsed }
     // Merge with defaults to ensure all keys exist
     return {
+      ...base,
       editor: { ...defaultSettings.editor, ...parsed.editor },
       appearance: { ...defaultSettings.appearance, ...parsed.appearance },
       terminal: { ...defaultSettings.terminal, ...parsed.terminal },
@@ -308,6 +325,7 @@ async function loadSettings() {
         sidebar: { ...defaultSettings.panels.sidebar, ...parsed.panels?.sidebar }
       },
       ai: { ...defaultSettings.ai, ...parsed.ai },
+      workspace: { ...defaultSettings.workspace, ...parsed.workspace },
       recentWorkspaces: parsed.recentWorkspaces || []
     }
   } catch {
@@ -404,10 +422,17 @@ async function fetchCliStoreCatalog() {
   }
 }
 
-async function npmListInstalled() {
-  await ensureCliToolsProject()
-  const dir = getCliToolsDir()
+async function npmListInstalled(scope = 'local') {
   try {
+    if (scope === 'global') {
+      const { stdout } = await execAsync('npm ls -g --json --depth=0')
+      const parsed = JSON.parse(stdout || '{}')
+      const deps = parsed.dependencies || {}
+      return Object.keys(deps).map((name) => ({ name, version: deps[name]?.version || null }))
+    }
+
+    await ensureCliToolsProject()
+    const dir = getCliToolsDir()
     const { stdout } = await execAsync(`npm ls --json --depth=0 --prefix "${dir}"`)
     const parsed = JSON.parse(stdout || '{}')
     const deps = parsed.dependencies || {}
@@ -417,18 +442,26 @@ async function npmListInstalled() {
   }
 }
 
-async function npmInstallPackage(pkg) {
+async function npmInstallPackage(pkg, scope = 'local') {
   const check = await checkNodeAndNpm()
   if (!check.ok) throw new Error(check.error || 'Node.js/npm não disponível')
+  if (scope === 'global') {
+    await execAsync(`npm install -g --no-fund --no-audit --silent "${pkg}"`)
+    return { ok: true }
+  }
   await ensureCliToolsProject()
   const dir = getCliToolsDir()
   await execAsync(`npm install --no-fund --no-audit --silent --prefix "${dir}" "${pkg}"`)
   return { ok: true }
 }
 
-async function npmUninstallPackage(pkg) {
+async function npmUninstallPackage(pkg, scope = 'local') {
   const check = await checkNodeAndNpm()
   if (!check.ok) throw new Error(check.error || 'Node.js/npm não disponível')
+  if (scope === 'global') {
+    await execAsync(`npm uninstall -g --no-fund --no-audit --silent "${pkg}"`)
+    return { ok: true }
+  }
   await ensureCliToolsProject()
   const dir = getCliToolsDir()
   await execAsync(`npm uninstall --no-fund --no-audit --silent --prefix "${dir}" "${pkg}"`)
@@ -470,22 +503,56 @@ async function getLastWorkspace() {
   return recents.length > 0 ? recents[0] : null
 }
 
+async function setWorkspaceState({ folders, activeFolder }) {
+  const unique = Array.isArray(folders)
+    ? Array.from(new Set(folders.filter(Boolean).map((p) => path.resolve(p))))
+    : []
+  const resolvedActive = activeFolder ? path.resolve(activeFolder) : ''
+  const active = resolvedActive && unique.includes(resolvedActive) ? resolvedActive : unique[0] || null
+
+  workspaceFolders = unique
+  currentWorkspacePath = active
+
+  if (workspaceFolders.length) {
+    await startWorkspaceWatcher(workspaceFolders)
+  } else {
+    stopWorkspaceWatcher()
+  }
+
+  try {
+    const settings = await loadSettings()
+    settings.workspace = settings.workspace || {}
+    settings.workspace.folders = workspaceFolders
+    settings.workspace.activeFolder = active || ''
+    await saveSettings(settings)
+  } catch {}
+
+  if (aiAgent && active) {
+    aiAgent.setWorkspace(active)
+    toolExecutor.setWorkspace(active)
+  }
+
+  return { folders: workspaceFolders, activeFolder: active }
+}
+
 function assertWorkspaceSelected() {
-  if (!currentWorkspacePath) {
+  if (!currentWorkspacePath || !workspaceFolders.length) {
     throw new Error('No workspace selected')
   }
   return currentWorkspacePath
 }
 
 function assertPathInsideWorkspace(filePath) {
-  const workspacePath = assertWorkspaceSelected()
-  const resolvedWorkspace = path.resolve(workspacePath)
   const resolvedFile = path.resolve(filePath)
+  if (!workspaceFolders.length) throw new Error('No workspace selected')
 
-  const wsWithSep = resolvedWorkspace.endsWith(path.sep) ? resolvedWorkspace : resolvedWorkspace + path.sep
-  if (resolvedFile !== resolvedWorkspace && !resolvedFile.startsWith(wsWithSep)) {
-    throw new Error('Path is outside workspace')
-  }
+  const isInside = workspaceFolders.some((root) => {
+    const resolvedWorkspace = path.resolve(root)
+    const wsWithSep = resolvedWorkspace.endsWith(path.sep) ? resolvedWorkspace : resolvedWorkspace + path.sep
+    return resolvedFile === resolvedWorkspace || resolvedFile.startsWith(wsWithSep)
+  })
+
+  if (!isInside) throw new Error('Path is outside workspace')
 
   return resolvedFile
 }
@@ -674,12 +741,11 @@ app.whenReady().then(async () => {
         return null
       }
       const selected = res.filePaths[0] ?? null
-      currentWorkspacePath = selected
+      if (selected) await setWorkspaceState({ folders: [selected], activeFolder: selected })
       log('info', 'ipc:workspace:select', 'Workspace selecionado', { path: selected })
       
       // Salva nos recentes
       if (selected) {
-        await startWorkspaceWatcher(selected)
         await addRecentWorkspace(selected)
         log('info', 'ipc:workspace:select', 'Workspace adicionado aos recentes')
         
@@ -716,8 +782,10 @@ app.whenReady().then(async () => {
         throw new Error('Path is not a directory')
       }
       
-      currentWorkspacePath = workspacePath
-      await startWorkspaceWatcher(workspacePath)
+      const settings = await loadSettings()
+      const saved = Array.isArray(settings?.workspace?.folders) ? settings.workspace.folders : []
+      const nextFolders = saved.length ? Array.from(new Set([...saved, workspacePath])) : [workspacePath]
+      await setWorkspaceState({ folders: nextFolders, activeFolder: workspacePath })
       await addRecentWorkspace(workspacePath)
       
       // Configura o agente de IA
@@ -756,10 +824,53 @@ app.whenReady().then(async () => {
     }
   })
 
+  ipcMain.handle('workspace:getFolders', async () => {
+    return { folders: workspaceFolders, activeFolder: currentWorkspacePath }
+  })
+
+  ipcMain.handle('workspace:setActiveFolder', async (_evt, folderPath) => {
+    if (typeof folderPath !== 'string' || folderPath.trim().length === 0) throw new Error('Invalid folderPath')
+    const resolved = path.resolve(folderPath)
+    if (!workspaceFolders.includes(resolved) && !workspaceFolders.includes(folderPath)) {
+      throw new Error('Folder is not in workspace')
+    }
+    const active = workspaceFolders.find((p) => path.resolve(p) === resolved) || folderPath
+    await setWorkspaceState({ folders: workspaceFolders, activeFolder: active })
+    return { folders: workspaceFolders, activeFolder: currentWorkspacePath }
+  })
+
+  ipcMain.handle('workspace:addFolder', async () => {
+    const res = await dialog.showOpenDialog({
+      title: 'Add folder to workspace',
+      properties: ['openDirectory']
+    })
+    if (res.canceled) return { folders: workspaceFolders, activeFolder: currentWorkspacePath }
+    const selected = res.filePaths[0] ?? null
+    if (!selected) return { folders: workspaceFolders, activeFolder: currentWorkspacePath }
+    const next = Array.from(new Set([...(workspaceFolders || []), selected]))
+    await setWorkspaceState({ folders: next, activeFolder: currentWorkspacePath || selected })
+    await addRecentWorkspace(selected)
+    return { folders: workspaceFolders, activeFolder: currentWorkspacePath }
+  })
+
+  ipcMain.handle('workspace:removeFolder', async (_evt, folderPath) => {
+    if (typeof folderPath !== 'string' || folderPath.trim().length === 0) throw new Error('Invalid folderPath')
+    const resolved = path.resolve(folderPath)
+    const next = (workspaceFolders || []).filter((p) => path.resolve(p) !== resolved)
+    const nextActive = currentWorkspacePath && path.resolve(currentWorkspacePath) === resolved ? (next[0] || null) : currentWorkspacePath
+    await setWorkspaceState({ folders: next, activeFolder: nextActive })
+    return { folders: workspaceFolders, activeFolder: currentWorkspacePath }
+  })
+
   ipcMain.handle('workspace:tree', async () => {
     try {
-      const workspacePath = assertWorkspaceSelected()
-      return buildTree(workspacePath)
+      assertWorkspaceSelected()
+      if (workspaceFolders.length === 1) {
+        return buildTree(workspaceFolders[0])
+      }
+      const children = await Promise.all(workspaceFolders.map((p) => buildTree(p)))
+      children.sort((a, b) => a.name.localeCompare(b.name))
+      return { name: 'WORKSPACE', path: '__workspace__', kind: 'dir', children }
     } catch (e) {
       console.error('workspace:tree failed', { currentWorkspacePath }, e)
       throw e
@@ -1415,23 +1526,35 @@ app.whenReady().then(async () => {
     return await fetchCliStoreCatalog()
   })
 
-  ipcMain.handle('cliStore:listInstalled', async () => {
-    return await npmListInstalled()
+  ipcMain.handle('cliStore:listInstalled', async (_evt, options = {}) => {
+    const scope = options?.scope === 'global' ? 'global' : 'local'
+    return await npmListInstalled(scope)
   })
 
-  ipcMain.handle('cliStore:install', async (_evt, pkg) => {
-    if (typeof pkg !== 'string' || pkg.trim().length === 0) throw new Error('Invalid package')
-    await npmInstallPackage(pkg.trim())
-    return await npmListInstalled()
+  ipcMain.handle('cliStore:install', async (_evt, options = {}) => {
+    const pkg = typeof options?.pkg === 'string' ? options.pkg.trim() : ''
+    if (!pkg) throw new Error('Invalid package')
+    const scope = options?.scope === 'global' ? 'global' : 'local'
+    await npmInstallPackage(pkg, scope)
+    return await npmListInstalled(scope)
   })
 
-  ipcMain.handle('cliStore:uninstall', async (_evt, pkg) => {
-    if (typeof pkg !== 'string' || pkg.trim().length === 0) throw new Error('Invalid package')
-    await npmUninstallPackage(pkg.trim())
-    return await npmListInstalled()
+  ipcMain.handle('cliStore:uninstall', async (_evt, options = {}) => {
+    const pkg = typeof options?.pkg === 'string' ? options.pkg.trim() : ''
+    if (!pkg) throw new Error('Invalid package')
+    const scope = options?.scope === 'global' ? 'global' : 'local'
+    await npmUninstallPackage(pkg, scope)
+    return await npmListInstalled(scope)
   })
 
-  ipcMain.handle('cliStore:getBinPath', async () => {
+  ipcMain.handle('cliStore:getBinPath', async (_evt, options = {}) => {
+    const scope = options?.scope === 'global' ? 'global' : 'local'
+    if (scope === 'global') {
+      const check = await checkNodeAndNpm()
+      if (!check.ok) throw new Error(check.error || 'Node.js/npm não disponível')
+      const { stdout } = await execAsync('npm bin -g')
+      return String(stdout || '').trim()
+    }
     await ensureCliToolsProject()
     return getCliToolsBinDir()
   })
@@ -1439,7 +1562,6 @@ app.whenReady().then(async () => {
   // ===== AI Agent Handlers =====
   
   // Instância do agente (uma por janela seria ideal, mas singleton por agora)
-  let aiAgent = null
   
   // Inicializar agente de IA
   ipcMain.handle('ai:init', async (_evt, settings) => {

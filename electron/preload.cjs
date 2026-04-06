@@ -47,6 +47,10 @@ contextBridge.exposeInMainWorld('monarco', {
     openRecent: (path) => ipcRenderer.invoke('workspace:openRecent', path),
     getLast: () => ipcRenderer.invoke('workspace:getLast'),
     removeRecent: (path) => ipcRenderer.invoke('workspace:removeRecent', path),
+    getFolders: () => ipcRenderer.invoke('workspace:getFolders'),
+    addFolder: () => ipcRenderer.invoke('workspace:addFolder'),
+    removeFolder: (path) => ipcRenderer.invoke('workspace:removeFolder', path),
+    setActiveFolder: (path) => ipcRenderer.invoke('workspace:setActiveFolder', path),
     onOpenFromCli: (callback) => {
       const listener = (_event, path) => callback(path)
       ipcRenderer.on('workspace:open-from-cli', listener)
@@ -85,10 +89,10 @@ contextBridge.exposeInMainWorld('monarco', {
   cliStore: {
     checkNode: () => ipcRenderer.invoke('cliStore:checkNode'),
     fetchCatalog: () => ipcRenderer.invoke('cliStore:fetchCatalog'),
-    listInstalled: () => ipcRenderer.invoke('cliStore:listInstalled'),
-    install: (pkg) => ipcRenderer.invoke('cliStore:install', pkg),
-    uninstall: (pkg) => ipcRenderer.invoke('cliStore:uninstall', pkg),
-    getBinPath: () => ipcRenderer.invoke('cliStore:getBinPath')
+    listInstalled: ({ scope } = {}) => ipcRenderer.invoke('cliStore:listInstalled', { scope }),
+    install: (pkg, { scope } = {}) => ipcRenderer.invoke('cliStore:install', { pkg, scope }),
+    uninstall: (pkg, { scope } = {}) => ipcRenderer.invoke('cliStore:uninstall', { pkg, scope }),
+    getBinPath: ({ scope } = {}) => ipcRenderer.invoke('cliStore:getBinPath', { scope })
   },
   
   // AI Agent APIs

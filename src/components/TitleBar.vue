@@ -145,6 +145,7 @@ const menus = [
       { id: 'new-folder', label: 'New Folder', action: 'newFolder' },
       { type: 'separator' },
       { id: 'open-folder', label: 'Open Folder...', shortcut: 'Ctrl+O', action: 'openFolder' },
+      { id: 'add-folder', label: 'Add Folder to Workspace...', action: 'addFolder' },
       { id: 'open-recent', label: 'Open Recent', disabled: true },
       { type: 'separator' },
       { id: 'save', label: 'Save', shortcut: 'Ctrl+S', action: 'save' },

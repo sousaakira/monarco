@@ -21,6 +21,16 @@
           </button>
         </div>
         <div v-if="activeTab === 'terminal'" class="panel-tabs-right">
+          <select
+            v-if="workspaceFolderOptions.length > 1"
+            v-model="selectedAiCwd"
+            class="panel-profile-select"
+            title="Projeto"
+          >
+            <option v-for="p in workspaceFolderOptions" :key="p.path" :value="p.path">
+              {{ p.label }}
+            </option>
+          </select>
           <select v-model="selectedTerminalProfileId" class="panel-profile-select" :disabled="terminalProfiles.length === 0" title="Perfil">
             <option v-if="terminalProfiles.length === 0" value="">Sem perfis</option>
             <option v-for="p in terminalProfiles" :key="p.id" :value="p.id">
@@ -482,8 +492,19 @@
           <div v-if="!nodeStatus?.ok" class="store-warning">
             Node.js/npm não encontrado. Instale Node.js para usar a loja.
           </div>
+          <div v-else-if="storeScope === 'global'" class="store-note">
+            Instalação global pode exigir permissões de admin dependendo do seu npm prefix.
+          </div>
           <div class="store-toolbar">
             <input class="store-search" v-model="storeSearch" placeholder="Buscar pacote..." />
+            <div class="store-scope">
+              <button class="store-scope-btn" :class="{ active: storeScope === 'global' }" type="button" @click="storeScope = 'global'">
+                Global
+              </button>
+              <button class="store-scope-btn" :class="{ active: storeScope === 'local' }" type="button" @click="storeScope = 'local'">
+                Local
+              </button>
+            </div>
             <button class="store-refresh" type="button" @click="refreshCliStore" :disabled="storeLoading">
               Atualizar
             </button>
@@ -505,7 +526,11 @@
                   @click="uninstallCli(app.package)"
                   :disabled="!nodeStatus?.ok || storeInstalling === app.package"
                 >
-                  Remover
+                  <span v-if="storeInstalling === app.package" class="store-btn-inline">
+                    <span class="store-spinner"></span>
+                    Removendo...
+                  </span>
+                  <span v-else>Remover</span>
                 </button>
                 <button
                   v-else
@@ -514,7 +539,11 @@
                   @click="installCli(app.package)"
                   :disabled="!nodeStatus?.ok || storeInstalling === app.package"
                 >
-                  Instalar
+                  <span v-if="storeInstalling === app.package" class="store-btn-inline">
+                    <span class="store-spinner"></span>
+                    Instalando...
+                  </span>
+                  <span v-else>Instalar</span>
                 </button>
               </div>
             </div>
@@ -962,6 +991,8 @@ const activeAiProfile = computed(() => {
 })
 const aiSavedSessions = ref([])
 const showAiSavedMenu = ref(false)
+const workspaceFolderOptions = ref([])
+const selectedAiCwd = ref('')
 const cliStoreApiAvailable = !!window.monarco?.cliStore
 const showCliStoreModal = ref(false)
 const storeLoading = ref(false)
@@ -971,7 +1002,9 @@ const storeSearch = ref('')
 const nodeStatus = ref(null)
 const installedCli = ref([])
 const storeInstalling = ref('')
+const storeInstallingAction = ref('')
 const cliBinPath = ref('')
+const storeScope = ref('global')
 const aiTerminalContextMenu = ref({
   open: false,
   x: 0,
@@ -1099,6 +1132,25 @@ async function loadAiSavedSessionsFromSettings() {
   }
 }
 
+function folderLabel(p) {
+  const parts = String(p || '').split(/[/\\]/)
+  return parts[parts.length - 1] || p
+}
+
+async function loadWorkspaceFoldersForAi() {
+  try {
+    const info = await window.monarco?.workspace?.getFolders?.()
+    const folders = Array.isArray(info?.folders) ? info.folders : []
+    workspaceFolderOptions.value = folders.map((p) => ({ path: p, label: folderLabel(p) }))
+    if (!selectedAiCwd.value) {
+      selectedAiCwd.value = info?.activeFolder || folders[0] || ''
+    }
+  } catch {
+    workspaceFolderOptions.value = []
+    if (!selectedAiCwd.value) selectedAiCwd.value = ''
+  }
+}
+
 const filteredStoreApps = computed(() => {
   const q = storeSearch.value.trim().toLowerCase()
   const apps = Array.isArray(storeCatalog.value?.apps) ? storeCatalog.value.apps : []
@@ -1128,8 +1180,8 @@ async function refreshCliStore() {
       storeError.value = catalogRes?.error || 'Falha ao carregar catálogo'
     }
     if (status?.ok) {
-      installedCli.value = await window.monarco.cliStore.listInstalled()
-      cliBinPath.value = await window.monarco.cliStore.getBinPath()
+      installedCli.value = await window.monarco.cliStore.listInstalled({ scope: storeScope.value })
+      cliBinPath.value = await window.monarco.cliStore.getBinPath({ scope: storeScope.value })
     } else {
       installedCli.value = []
       cliBinPath.value = ''
@@ -1153,28 +1205,37 @@ function closeCliStore() {
 async function installCli(pkg) {
   if (!pkg || !nodeStatus.value?.ok) return
   storeInstalling.value = pkg
+  storeInstallingAction.value = 'install'
   try {
-    installedCli.value = await window.monarco.cliStore.install(pkg)
+    installedCli.value = await window.monarco.cliStore.install(pkg, { scope: storeScope.value })
     window.monarcoToast?.success?.('Instalado!')
   } catch (e) {
     window.monarcoToast?.error?.('Falha ao instalar', { description: e?.message })
   } finally {
     storeInstalling.value = ''
+    storeInstallingAction.value = ''
   }
 }
 
 async function uninstallCli(pkg) {
   if (!pkg || !nodeStatus.value?.ok) return
   storeInstalling.value = pkg
+  storeInstallingAction.value = 'uninstall'
   try {
-    installedCli.value = await window.monarco.cliStore.uninstall(pkg)
+    installedCli.value = await window.monarco.cliStore.uninstall(pkg, { scope: storeScope.value })
     window.monarcoToast?.success?.('Removido!')
   } catch (e) {
     window.monarcoToast?.error?.('Falha ao remover', { description: e?.message })
   } finally {
     storeInstalling.value = ''
+    storeInstallingAction.value = ''
   }
 }
+
+watch(storeScope, async () => {
+  if (!showCliStoreModal.value) return
+  await refreshCliStore()
+})
 
 async function persistAiSavedSessionsToSettings() {
   try {
@@ -1299,7 +1360,7 @@ function closeAiTerminalSession(terminalId) {
 async function createAiTerminalSession(options = {}) {
   if (!window.monarco?.terminal) return
   if (!aiTerminalContainer.value) return
-  const cwd = await window.monarco.terminal.getCwd()
+  const cwd = options?.cwd || selectedAiCwd.value || await window.monarco.terminal.getCwd()
   const profileId = options?.profileId || selectedTerminalProfileId.value || terminalProfiles.value[0]?.id || ''
   const profile = terminalProfiles.value.find(p => p?.id === profileId) || null
   const env = profile?.env && typeof profile.env === 'object' ? toPlainEnv(profile.env) : undefined
@@ -1684,6 +1745,9 @@ onMounted(() => {
   if (window.monarco?.settings?.load) {
     loadTerminalProfilesFromSettings()
     loadAiSavedSessionsFromSettings()
+  }
+  if (window.monarco?.workspace?.getFolders) {
+    loadWorkspaceFoldersForAi()
   }
   
   const handleClickOutside = (e) => {
@@ -2631,6 +2695,41 @@ function handleAiTerminalContextKeydown(e) {
   align-items: center;
 }
 
+.store-note {
+  padding: 10px 12px;
+  border-radius: 10px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  background: rgba(255, 255, 255, 0.03);
+  color: var(--text);
+  font-size: 12px;
+}
+
+.store-scope {
+  display: inline-flex;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 10px;
+  overflow: hidden;
+  background: rgba(255, 255, 255, 0.02);
+}
+
+.store-scope-btn {
+  padding: 8px 10px;
+  border: none;
+  background: transparent;
+  color: var(--muted);
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.store-scope-btn.active {
+  color: var(--text);
+  background: rgba(0, 122, 204, 0.14);
+}
+
+.store-scope-btn:hover {
+  color: var(--text);
+}
+
 .store-search {
   flex: 1;
   padding: 8px 10px;
@@ -2747,6 +2846,26 @@ function handleAiTerminalContextKeydown(e) {
 
 .store-btn-primary:hover {
   background: rgba(0, 122, 204, 0.22);
+}
+
+.store-btn-inline {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.store-spinner {
+  width: 12px;
+  height: 12px;
+  border-radius: 999px;
+  border: 2px solid rgba(255, 255, 255, 0.25);
+  border-top-color: rgba(0, 122, 204, 0.9);
+  animation: store-spin 0.9s linear infinite;
+}
+
+@keyframes store-spin {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
 }
 
 .store-footer {
