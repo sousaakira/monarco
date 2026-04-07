@@ -83,8 +83,8 @@
                 class="panel-icon-btn"
                 type="button"
                 title="Sessões salvas"
-                @click.stop="showAiSavedMenu = !showAiSavedMenu"
-                :disabled="aiSavedSessions.length === 0"
+                @click.stop="toggleAiSavedMenu"
+                :disabled="!aiSessionsApiAvailable"
               >
                 <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                   <path d="M12 8v5l3 3"></path>
@@ -117,7 +117,7 @@
               type="button"
               title="Configurar perfis"
               @click="openTerminalProfilesModal"
-              :disabled="!settingsApiAvailable"
+              :disabled="!profilesApiAvailable"
             >
               <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                 <path d="M12 15.5a3.5 3.5 0 1 0 0-7 3.5 3.5 0 0 0 0 7z"></path>
@@ -643,7 +643,7 @@ const selectedTerminalProfile = computed(() => {
 })
 const showTerminalProfilesModal = ref(false)
 const terminalProfilesLoaded = ref(false)
-const settingsApiAvailable = !!window.monarco?.settings
+const profilesApiAvailable = !!window.monarco?.aiProfiles
 const modalProfileId = ref('')
 const profilesModalRef = ref(null)
 const profilesModalSize = ref({ width: null, height: null })
@@ -677,12 +677,17 @@ const isProfileDraftDirty = computed(() => {
   return JSON.stringify(current) !== JSON.stringify(draftBaseline.value)
 })
 
-async function loadTerminalProfilesFromSettings() {
+async function loadTerminalProfilesFromStore() {
+  if (!window.monarco?.aiProfiles?.list) {
+    terminalProfiles.value = []
+    selectedTerminalProfileId.value = ''
+    terminalProfilesLoaded.value = true
+    return
+  }
   try {
-    const settings = await window.monarco?.settings?.load?.()
-    const profiles = settings?.terminal?.profiles
-    const activeProfileId = settings?.terminal?.activeProfileId
-
+    const res = await window.monarco.aiProfiles.list()
+    const profiles = res?.profiles
+    const activeProfileId = res?.activeProfileId
     terminalProfiles.value = Array.isArray(profiles)
       ? profiles
           .filter(p => p && typeof p === 'object')
@@ -695,10 +700,10 @@ async function loadTerminalProfilesFromSettings() {
           .filter(p => p.id && p.name)
       : []
     selectedTerminalProfileId.value = activeProfileId || terminalProfiles.value[0]?.id || ''
-    terminalProfilesLoaded.value = true
-  } catch (e) {
+  } catch {
     terminalProfiles.value = []
     selectedTerminalProfileId.value = ''
+  } finally {
     terminalProfilesLoaded.value = true
   }
 }
@@ -715,22 +720,24 @@ function toPlainEnv(input) {
   return out
 }
 
-async function persistTerminalProfilesToSettings() {
-  try {
-    const settings = await window.monarco?.settings?.load?.()
-    if (!settings) return
-    settings.terminal = settings.terminal || {}
-    settings.terminal.profiles = terminalProfiles.value.map(p => ({
-      id: String(p.id || '').trim(),
-      name: String(p.name || '').trim(),
-      startupCommand: String(p.startupCommand || '').trim(),
-      env: toPlainEnv(p.env)
-    }))
-    settings.terminal.activeProfileId = selectedTerminalProfileId.value
-    await window.monarco?.settings?.save?.(settings)
-  } catch (e) {
-    window.monarcoToast?.error?.('Erro ao salvar perfis', { description: e?.message })
-  }
+async function upsertTerminalProfile(profile) {
+  if (!window.monarco?.aiProfiles?.upsert) return
+  await window.monarco.aiProfiles.upsert({
+    id: String(profile.id || '').trim(),
+    name: String(profile.name || '').trim(),
+    startupCommand: String(profile.startupCommand || '').trim(),
+    env: toPlainEnv(profile.env)
+  })
+}
+
+async function setActiveTerminalProfile(id) {
+  if (!window.monarco?.aiProfiles?.setActive) return
+  await window.monarco.aiProfiles.setActive(String(id || '').trim())
+}
+
+async function removeTerminalProfile(id) {
+  if (!window.monarco?.aiProfiles?.remove) return
+  await window.monarco.aiProfiles.remove(String(id || '').trim())
 }
 
 function openTerminalProfilesModal() {
@@ -928,7 +935,8 @@ async function saveProfileDraft() {
 
   selectedTerminalProfileId.value = draftId
   modalProfileId.value = draftId
-  await persistTerminalProfilesToSettings()
+  await upsertTerminalProfile(profile)
+  await setActiveTerminalProfile(draftId)
   setDraftBaselineFromCurrent()
   window.monarcoToast?.success?.('Perfil salvo!')
 }
@@ -971,7 +979,8 @@ async function deleteModalProfile() {
   if (selectedTerminalProfileId.value === id) {
     selectedTerminalProfileId.value = nextId
   }
-  await persistTerminalProfilesToSettings()
+  await removeTerminalProfile(id)
+  if (nextId) await setActiveTerminalProfile(nextId)
   window.monarcoToast?.info?.('Perfil removido. O terminal em execução não será reiniciado.')
 }
 
@@ -1011,6 +1020,7 @@ const workspaceFolderOptions = ref([])
 const selectedAiCwd = ref('')
 const showAiProjectPicker = ref(false)
 const isStartingAiCli = ref(false)
+const aiSessionsApiAvailable = !!window.monarco?.aiSessions
 const cliStoreApiAvailable = !!window.monarco?.cliStore
 const showCliStoreModal = ref(false)
 const storeLoading = ref(false)
@@ -1036,7 +1046,7 @@ const aiXterms = new Map()
 const aiFitAddons = new Map()
 const aiOutputBuffers = new Map()
 const aiLastResumeByTerminalId = new Map()
-let aiSavedPersistTimer = null
+let aiMigrateAttempted = false
 
 function openAiTerminalContextMenu(e) {
   const xterm = aiXterms.get(activeAiTerminalId.value)
@@ -1092,6 +1102,14 @@ async function pasteToAiTerminal() {
   }
 }
 
+async function toggleAiSavedMenu() {
+  const next = !showAiSavedMenu.value
+  showAiSavedMenu.value = next
+  if (next) {
+    await refreshAiSavedSessions()
+  }
+}
+
 async function runAiTerminalStartupCommand() {
   const cmd = String(activeAiProfile.value?.startupCommand || '').trim()
   if (!cmd) {
@@ -1125,33 +1143,52 @@ function extractResumeCommand(text) {
   return { tool, resumeId, resumeCommand: `${tool} --resume ${resumeId}` }
 }
 
-function queuePersistAiSavedSessions() {
-  if (aiSavedPersistTimer) clearTimeout(aiSavedPersistTimer)
-  aiSavedPersistTimer = setTimeout(() => {
-    aiSavedPersistTimer = null
-    persistAiSavedSessionsToSettings()
-  }, 400)
+async function refreshAiSavedSessions() {
+  if (window.monarco?.aiSessions?.list) {
+    try {
+      const list = await window.monarco.aiSessions.list({ limit: 50 })
+      aiSavedSessions.value = Array.isArray(list) ? list : []
+    } catch {
+      aiSavedSessions.value = []
+    }
+  }
+
+  if (aiSavedSessions.value.length > 0) return
+  if (aiMigrateAttempted) return
+  aiMigrateAttempted = true
+
+  const legacy = await loadLegacyAiSavedSessionsFromSettings()
+  if (!legacy.length) return
+
+  for (const s of legacy) {
+    try {
+      await window.monarco?.aiSessions?.upsert?.(s)
+    } catch {}
+  }
+  try {
+    const list = await window.monarco?.aiSessions?.list?.({ limit: 50 })
+    aiSavedSessions.value = Array.isArray(list) ? list : aiSavedSessions.value
+  } catch {}
 }
 
-async function loadAiSavedSessionsFromSettings() {
+async function loadLegacyAiSavedSessionsFromSettings() {
   try {
     const settings = await window.monarco?.settings?.load?.()
     const list = settings?.terminal?.aiCliSessions
-    aiSavedSessions.value = Array.isArray(list)
-      ? list
-          .filter(x => x && typeof x === 'object' && typeof x.resumeCommand === 'string')
-          .map(x => ({
-            tool: String(x.tool || '').trim(),
-            resumeId: String(x.resumeId || '').trim(),
-            resumeCommand: String(x.resumeCommand || '').trim(),
-            profileId: String(x.profileId || '').trim(),
-            name: String(x.name || '').trim(),
-            updatedAt: String(x.updatedAt || '').trim()
-          }))
-          .filter(x => x.resumeCommand.length > 0)
-      : []
+    if (!Array.isArray(list)) return []
+    return list
+      .filter(x => x && typeof x === 'object' && typeof x.resumeCommand === 'string')
+      .map(x => ({
+        tool: String(x.tool || '').trim(),
+        resumeId: String(x.resumeId || '').trim(),
+        resumeCommand: String(x.resumeCommand || '').trim(),
+        profileId: String(x.profileId || '').trim(),
+        name: String(x.name || '').trim(),
+        updatedAt: String(x.updatedAt || '').trim()
+      }))
+      .filter(x => x.resumeId.length > 0 && x.resumeCommand.length > 0)
   } catch {
-    aiSavedSessions.value = []
+    return []
   }
 }
 
@@ -1301,23 +1338,6 @@ watch(storeScope, async () => {
   await refreshCliStore()
 })
 
-async function persistAiSavedSessionsToSettings() {
-  try {
-    const settings = await window.monarco?.settings?.load?.()
-    if (!settings) return
-    settings.terminal = settings.terminal || {}
-    settings.terminal.aiCliSessions = aiSavedSessions.value.map(s => ({
-      tool: String(s.tool || '').trim(),
-      resumeId: String(s.resumeId || '').trim(),
-      resumeCommand: String(s.resumeCommand || '').trim(),
-      profileId: String(s.profileId || '').trim(),
-      name: String(s.name || '').trim(),
-      updatedAt: String(s.updatedAt || '').trim()
-    }))
-    await window.monarco?.settings?.save?.(settings)
-  } catch {}
-}
-
 function upsertSavedSessionFromTerminal(terminalId) {
   const resume = aiLastResumeByTerminalId.get(terminalId)
   if (!resume) return
@@ -1331,14 +1351,7 @@ function upsertSavedSessionFromTerminal(terminalId) {
     name: session?.name || '',
     updatedAt: now
   }
-  const idx = aiSavedSessions.value.findIndex(s => s.resumeCommand === next.resumeCommand)
-  if (idx >= 0) {
-    aiSavedSessions.value.splice(idx, 1, { ...aiSavedSessions.value[idx], ...next })
-  } else {
-    aiSavedSessions.value.unshift(next)
-  }
-  aiSavedSessions.value = aiSavedSessions.value.slice(0, 30)
-  queuePersistAiSavedSessions()
+  window.monarco?.aiSessions?.upsert?.(next)
 }
 
 function captureResumeFromOutput(terminalId, dataChunk) {
@@ -1806,9 +1819,11 @@ onMounted(() => {
     }).catch(console.error)
   }
 
-  if (window.monarco?.settings?.load) {
-    loadTerminalProfilesFromSettings()
-    loadAiSavedSessionsFromSettings()
+  if (window.monarco?.aiProfiles?.list) {
+    loadTerminalProfilesFromStore()
+  }
+  if (window.monarco?.aiSessions?.list) {
+    refreshAiSavedSessions()
   }
   if (window.monarco?.workspace?.getFolders) {
     loadWorkspaceFoldersForAi()
@@ -1816,6 +1831,16 @@ onMounted(() => {
   if (window.monarco?.workspace?.onChanged) {
     window.monarco.workspace.onChanged((info) => {
       applyWorkspaceFoldersInfo(info)
+    })
+  }
+  if (window.monarco?.aiProfiles?.onChanged) {
+    window.monarco.aiProfiles.onChanged(() => {
+      loadTerminalProfilesFromStore()
+    })
+  }
+  if (window.monarco?.aiSessions?.onChanged) {
+    window.monarco.aiSessions.onChanged(() => {
+      refreshAiSavedSessions()
     })
   }
   
@@ -2038,9 +2063,12 @@ watch(activeTab, async (tab) => {
   }
 })
 
-watch(selectedTerminalProfileId, async () => {
+watch(selectedTerminalProfileId, async (id, prev) => {
   if (!terminalProfilesLoaded.value) return
-  await persistTerminalProfilesToSettings()
+  if (id === prev) return
+  try {
+    await setActiveTerminalProfile(id || '')
+  } catch {}
 })
 
 function handleAiTerminalContextKeydown(e) {

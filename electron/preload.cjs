@@ -99,6 +99,31 @@ contextBridge.exposeInMainWorld('monarco', {
     uninstall: (pkg, { scope } = {}) => ipcRenderer.invoke('cliStore:uninstall', { pkg, scope }),
     getBinPath: ({ scope } = {}) => ipcRenderer.invoke('cliStore:getBinPath', { scope })
   },
+
+  // AI CLI Sessions (persisted files)
+  aiSessions: {
+    list: ({ limit } = {}) => ipcRenderer.invoke('aiSessions:list', { limit }),
+    upsert: (session) => ipcRenderer.invoke('aiSessions:upsert', session),
+    remove: (resumeId) => ipcRenderer.invoke('aiSessions:remove', resumeId),
+    onChanged: (callback) => {
+      const listener = (_event, info) => callback(info)
+      ipcRenderer.on('aiSessions:changed', listener)
+      return () => ipcRenderer.removeListener('aiSessions:changed', listener)
+    }
+  },
+
+  // AI Profiles (persisted files)
+  aiProfiles: {
+    list: () => ipcRenderer.invoke('aiProfiles:list'),
+    upsert: (profile) => ipcRenderer.invoke('aiProfiles:upsert', profile),
+    remove: (id) => ipcRenderer.invoke('aiProfiles:remove', id),
+    setActive: (id) => ipcRenderer.invoke('aiProfiles:setActive', id),
+    onChanged: (callback) => {
+      const listener = (_event, info) => callback(info)
+      ipcRenderer.on('aiProfiles:changed', listener)
+      return () => ipcRenderer.removeListener('aiProfiles:changed', listener)
+    }
+  },
   
   // AI Agent APIs
   ai: {
