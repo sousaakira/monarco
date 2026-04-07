@@ -1,4 +1,4 @@
-# Monarco
+# Monarco.
 
 Monarco é um editor/IDE desktop (Electron + Vue + Monaco) focado em fluxo de trabalho com **agentes de IA via CLI** dentro do próprio editor.
 
