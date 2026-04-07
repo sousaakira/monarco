@@ -102,7 +102,7 @@
                 >
                   <span class="panel-saved-left">
                     <span class="panel-saved-name">{{ s.name || s.tool || 'Sessão' }}</span>
-                    <span class="panel-saved-meta">{{ s.resumeId || s.resumeCommand }}</span>
+                    <span class="panel-saved-meta">{{ (s.projectPath ? folderLabel(s.projectPath) + ' • ' : '') + (s.resumeId || s.resumeCommand) }}</span>
                   </span>
                   <span class="panel-saved-action">
                     <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor">
@@ -1136,11 +1136,21 @@ function stripAnsi(input) {
 
 function extractResumeCommand(text) {
   const clean = stripAnsi(text)
-  const match = clean.match(/\b([\w-]+)\s+--resume\s+([0-9a-fA-F-]{36})\b/)
-  if (!match) return null
-  const tool = match[1]
-  const resumeId = match[2]
-  return { tool, resumeId, resumeCommand: `${tool} --resume ${resumeId}` }
+  const matchResume = clean.match(/\b([\w-]+)\s+--resume\s+([0-9a-fA-F-]{36})\b/)
+  if (matchResume) {
+    const tool = matchResume[1]
+    const resumeId = matchResume[2]
+    return { tool, resumeId, resumeCommand: `${tool} --resume ${resumeId}` }
+  }
+
+  const matchOpencode = clean.match(/\b(opencode)\s+-s\s+(ses_[a-zA-Z0-9_-]+)\b/)
+  if (matchOpencode) {
+    const tool = matchOpencode[1]
+    const resumeId = matchOpencode[2]
+    return { tool, resumeId, resumeCommand: `${tool} -s ${resumeId}` }
+  }
+
+  return null
 }
 
 async function refreshAiSavedSessions() {
@@ -1349,6 +1359,7 @@ function upsertSavedSessionFromTerminal(terminalId) {
     resumeCommand: resume.resumeCommand,
     profileId: session?.profileId || '',
     name: session?.name || '',
+    projectPath: session?.cwd || selectedAiCwd.value || '',
     updatedAt: now
   }
   window.monarco?.aiSessions?.upsert?.(next)
@@ -1368,7 +1379,8 @@ function captureResumeFromOutput(terminalId, dataChunk) {
 
 async function resumeSavedSession(saved) {
   const profileId = saved?.profileId || selectedTerminalProfileId.value
-  const terminalId = await createAiTerminalSession({ profileId, name: saved?.name || 'IA', autoFocus: true })
+  const cwd = String(saved?.projectPath || '').trim()
+  const terminalId = await createAiTerminalSession({ profileId, name: saved?.name || 'IA', cwd: cwd || undefined, autoFocus: true })
   if (!terminalId) return
   const cmd = String(saved?.resumeCommand || '').trim()
   if (cmd) {
@@ -1487,7 +1499,8 @@ async function createAiTerminalSession(options = {}) {
     id: terminalId,
     name: String(options?.name || '').trim() || `IA ${sessionIndex}`,
     profileId: profile?.id || profileId,
-    profileName: profile?.name || 'Sem perfil'
+    profileName: profile?.name || 'Sem perfil',
+    cwd
   })
   activeAiTerminalId.value = terminalId
   await nextTick()
