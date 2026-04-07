@@ -526,6 +526,7 @@ async function aiSessionsUpsert(session) {
     resumeCommand,
     profileId: String(session.profileId || '').trim(),
     name: String(session.name || '').trim(),
+    projectPath: String(session.projectPath || '').trim(),
     updatedAt: String(session.updatedAt || new Date().toISOString()).trim()
   }
   const content = JSON.stringify(normalized, null, 2)
@@ -683,11 +684,12 @@ async function setWorkspaceState({ folders, activeFolder }) {
   }
 
   try {
-    const settings = await loadSettings()
-    settings.workspace = settings.workspace || {}
-    settings.workspace.folders = workspaceFolders
-    settings.workspace.activeFolder = active || ''
-    await saveSettings(settings)
+    await saveSettings({
+      workspace: {
+        folders: workspaceFolders,
+        activeFolder: active || ''
+      }
+    })
   } catch {}
 
   if (aiAgent && active) {
@@ -946,10 +948,7 @@ app.whenReady().then(async () => {
         throw new Error('Path is not a directory')
       }
       
-      const settings = await loadSettings()
-      const saved = Array.isArray(settings?.workspace?.folders) ? settings.workspace.folders : []
-      const nextFolders = saved.length ? Array.from(new Set([...saved, workspacePath])) : [workspacePath]
-      await setWorkspaceState({ folders: nextFolders, activeFolder: workspacePath })
+      await setWorkspaceState({ folders: [workspacePath], activeFolder: workspacePath })
       await addRecentWorkspace(workspacePath)
       
       // Configura o agente de IA
@@ -2017,6 +2016,15 @@ app.whenReady().then(async () => {
   // Atualiza workspace no agente quando selecionar nova pasta
   const originalWorkspaceSelect = ipcMain.listeners('workspace:select')[0]
   // Hook para atualizar workspace no agente
+
+  try {
+    const settings = await loadSettings()
+    const savedFolders = Array.isArray(settings?.workspace?.folders) ? settings.workspace.folders : []
+    const savedActive = typeof settings?.workspace?.activeFolder === 'string' ? settings.workspace.activeFolder : ''
+    if (savedFolders.length) {
+      await setWorkspaceState({ folders: savedFolders, activeFolder: savedActive || savedFolders[0] })
+    }
+  } catch {}
 
   const win = createWindow()
 

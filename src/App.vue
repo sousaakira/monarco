@@ -2949,9 +2949,18 @@ onMounted(async () => {
 
   // Carrega o último workspace automaticamente
   try {
-    const lastWorkspace = await window.monarco.workspace.getLast()
-    if (lastWorkspace && lastWorkspace.path) {
-      await openWorkspace(lastWorkspace.path)
+    const info = await window.monarco.workspace.getFolders()
+    const folders = Array.isArray(info?.folders) ? info.folders : []
+    const active = info?.activeFolder || folders[0] || null
+    if (folders.length) {
+      workspaceFolders.value = folders
+      workspacePath.value = active
+      await refreshTree()
+    } else {
+      const lastWorkspace = await window.monarco.workspace.getLast()
+      if (lastWorkspace && lastWorkspace.path) {
+        await openWorkspace(lastWorkspace.path)
+      }
     }
   } catch (e) {
     console.error('❌ [onMounted] Erro ao carregar workspace inicial:', e)
