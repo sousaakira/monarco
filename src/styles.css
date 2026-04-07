@@ -341,8 +341,10 @@ select optgroup {
 }
 
 .main {
-  display: grid;
+  display: flex;
+  flex-direction: column;
   min-width: 0;
+  min-height: 0;
   overflow: hidden;
   padding-bottom: 22px; /* Space for fixed statusbar */
 }
@@ -423,6 +425,9 @@ select optgroup {
   min-height: 0;
   background: var(--mono-bg);
   overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  position: relative;
 }
 
 .suggest-widget .monaco-list {
@@ -432,8 +437,115 @@ select optgroup {
 .monaco-editor-container {
   width: 100%;
   height: 100%;
+  flex: 1;
+  min-height: 0;
 }
 
+/* Mini Preview (in-editor) */
+.mini-preview-root {
+  display: flex;
+  flex-direction: column;
+  position: absolute;
+  inset: 0;
+  background: var(--panel);
+}
+
+.mini-preview-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 8px;
+  border-bottom: 1px solid var(--border);
+}
+
+.mini-preview-address {
+  flex: 1;
+  min-width: 0;
+  height: 28px;
+  padding: 0 10px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: rgba(255, 255, 255, 0.04);
+  color: var(--text);
+  font-size: 12px;
+  outline: none;
+}
+
+.mini-preview-btn {
+  height: 28px;
+  padding: 0 10px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: rgba(255, 255, 255, 0.04);
+  color: var(--text);
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.mini-preview-btn:hover {
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.mini-preview-btn:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.mini-preview-btn-active {
+  border-color: rgba(0, 122, 204, 0.75);
+  box-shadow: inset 0 0 0 1px rgba(0, 122, 204, 0.25);
+}
+
+.mini-preview-note {
+  width: 220px;
+  min-width: 140px;
+  height: 28px;
+  padding: 0 10px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: rgba(255, 255, 255, 0.04);
+  color: var(--text);
+  font-size: 12px;
+  outline: none;
+}
+
+.mini-preview-note:disabled {
+  opacity: 0.55;
+}
+
+.mini-preview-frame {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.mini-preview-iframe {
+  display: none; /* iframe não usado quando webview estiver disponível */
+}
+
+.mini-preview-webview {
+  position: absolute;
+  inset: 0;
+  border: 0;
+  background: #ffffff;
+}
+
+.mini-preview-overlay {
+  position: absolute;
+  inset: 0;
+  cursor: crosshair;
+  background: transparent;
+  z-index: 2;
+}
+
+.mini-preview-selection {
+  position: absolute;
+  border: 2px solid rgba(0, 122, 204, 0.95);
+  background: rgba(0, 122, 204, 0.12);
+  z-index: 3;
+  pointer-events: none;
+}
 /* Garante que o container do texto fica visível */
 .suggest-widget .monaco-list .monaco-list-row .monaco-highlighted-label {
   min-width: 250px !important;

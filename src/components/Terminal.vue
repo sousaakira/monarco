@@ -70,7 +70,7 @@ import { FitAddon } from '@xterm/addon-fit'
 import { WebLinksAddon } from '@xterm/addon-web-links'
 import 'xterm/css/xterm.css'
 
-const emit = defineEmits(['close'])
+const emit = defineEmits(['close', 'detected-url'])
 
 const terminalContainer = ref(null)
 const terminals = ref([])
@@ -81,6 +81,7 @@ let activeFitAddon = null
 let resizeObserver = null
 let dataUnsubscribe = null
 let exitUnsubscribe = null
+let lastDetectedUrl = ''
 
 const terminalContextMenu = ref({
   open: false,
@@ -322,6 +323,15 @@ function handleTerminalData(terminalId, data) {
   if (term && term.xterm) {
     term.xterm.write(data)
   }
+  const detectedUrl = extractUrlFromTerminalChunk(data)
+  if (detectedUrl && detectedUrl !== lastDetectedUrl) {
+    try {
+      const detectedOrigin = new URL(detectedUrl).origin
+      if (detectedOrigin === window.location.origin) return
+    } catch {}
+    lastDetectedUrl = detectedUrl
+    emit('detected-url', detectedUrl)
+  }
 }
 
 function handleTerminalExit(terminalId, exitCode) {
@@ -374,10 +384,19 @@ onUnmounted(() => {
   })
 })
 
+function sendCommand(command, { terminalId } = {}) {
+  const cmd = typeof command === 'string' ? command : ''
+  if (!cmd.trim()) return
+  const targetId = terminalId || activeTerminalId.value || terminals.value[0]?.id
+  if (!targetId) return
+  window.monarco?.terminal?.write?.(targetId, cmd.replace(/\r?\n/g, '\r') + '\r')
+}
+
 // Expor método para redimensionar externamente
 defineExpose({
   fit: fitTerminal,
-  createTerminal
+  createTerminal,
+  sendCommand
 })
 
 function handleContextMenuKeydown(e) {
@@ -386,6 +405,23 @@ function handleContextMenuKeydown(e) {
     e.preventDefault()
     closeTerminalContextMenu()
   }
+}
+
+function extractUrlFromTerminalChunk(chunk) {
+  const text = typeof chunk === 'string' ? chunk : ''
+  if (!text) return null
+
+  const withoutAnsi = text
+    .replace(/\x1b\[[0-9;]*[A-Za-z]/g, '')
+    .replace(/\x1b\][^\u0007]*(\u0007|\x1b\\)/g, '')
+
+  const match = withoutAnsi.match(/https?:\/\/[^\s]+/i)
+  if (!match) return null
+
+  let url = match[0]
+  url = url.replace(/[)\],"'`]+$/g, '')
+  url = url.replace(/\u001b.*$/g, '')
+  return url
 }
 </script>
 

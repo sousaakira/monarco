@@ -55,6 +55,15 @@ const maxAIChatWidth = 800
 // AI Chat state
 const isAIChatOpen = ref(false)
 
+// Preview-in-editor (mini browser) state
+const previewUrl = ref('')
+const previewSelectMode = ref(false)
+const previewSelection = ref(null)
+const previewSelectionNote = ref('')
+const previewSelectionStart = ref({ x: 0, y: 0 })
+const previewSelectionDragging = ref(false)
+const miniPreviewWebview = ref(null)
+
 // Active view state
 const activeView = ref('explorer')
 
@@ -730,6 +739,13 @@ function toggleAutocomplete() {
   }
 }
 
+function sendPreviewToChat(url) {
+  const u = normalizeUrlForPreview(url || previewUrl.value)
+  if (!u || !window.monarco?.ai?.chat) return
+  window.monarco.ai.chat(`Analise esta página do preview: ${u}\nQuero sugestões de melhorias e pontos para editar no código.`)
+  if (!isAIChatOpen.value) openAIChat()
+}
+
 async function refreshTree() {
   if (!workspacePath.value && workspaceFolders.value.length === 0) return
   lastError.value = null
@@ -1087,6 +1103,279 @@ function closeAIChat() {
 function toggleAIChat() {
   isAIChatOpen.value = !isAIChatOpen.value
   saveSettingsToFile()
+}
+
+function openPreview(url) {
+  const nextUrl = normalizeUrlForPreview(url || previewUrl.value || 'http://localhost:5173/')
+  previewUrl.value = nextUrl
+  openPreviewTab(nextUrl)
+}
+
+function normalizeUrlForPreview(u) {
+  const raw = String(u || '').trim()
+  if (!raw) return ''
+  if (/^[a-zA-Z][a-zA-Z0-9+.-]*:/.test(raw)) return raw
+  if (/^https?:\/\//i.test(raw)) return raw
+  return `http://${raw}`
+}
+
+function openPreviewTab(url) {
+  const host = (() => {
+    try { return new URL(url).host } catch { return url }
+  })()
+  const tabPath = `__preview__:${url}`
+  const existing = tabs.value.find(t => t.path === tabPath)
+  if (existing) {
+    activePath.value = existing.path
+    return
+  }
+  tabs.value.push({
+    path: tabPath,
+    name: `Preview (${host})`,
+    language: 'plaintext',
+    value: '',
+    dirty: false,
+    kind: 'preview',
+    previewUrl: url
+  })
+  activePath.value = tabPath
+}
+
+function getActivePreviewUrl() {
+  const tab = activeTab.value
+  if (tab && tab.kind === 'preview' && tab.previewUrl) return tab.previewUrl
+  return previewUrl.value
+}
+
+function togglePreviewSelectMode() {
+  previewSelectMode.value = !previewSelectMode.value
+  if (!previewSelectMode.value) {
+    previewSelectionDragging.value = false
+    previewSelection.value = null
+  }
+}
+
+function onPreviewOverlayPointerDown(e) {
+  if (!previewSelectMode.value) return
+  const target = e.currentTarget
+  if (!target?.getBoundingClientRect) return
+  const rect = target.getBoundingClientRect()
+  const x = clampNumber(e.clientX - rect.left, 0, rect.width)
+  const y = clampNumber(e.clientY - rect.top, 0, rect.height)
+  previewSelectionStart.value = { x, y }
+  previewSelectionDragging.value = true
+  previewSelection.value = {
+    x,
+    y,
+    width: 0,
+    height: 0,
+    frameWidth: rect.width,
+    frameHeight: rect.height,
+    url: getActivePreviewUrl()
+  }
+  try {
+    target.setPointerCapture(e.pointerId)
+  } catch {}
+}
+
+function onPreviewOverlayPointerMove(e) {
+  if (!previewSelectMode.value || !previewSelectionDragging.value) return
+  const target = e.currentTarget
+  if (!target?.getBoundingClientRect) return
+  const rect = target.getBoundingClientRect()
+  const x2 = clampNumber(e.clientX - rect.left, 0, rect.width)
+  const y2 = clampNumber(e.clientY - rect.top, 0, rect.height)
+  const { x: x1, y: y1 } = previewSelectionStart.value
+  const left = Math.min(x1, x2)
+  const top = Math.min(y1, y2)
+  const width = Math.abs(x2 - x1)
+  const height = Math.abs(y2 - y1)
+  if (!previewSelection.value) return
+  previewSelection.value = {
+    ...previewSelection.value,
+    x: left,
+    y: top,
+    width,
+    height,
+    frameWidth: rect.width,
+    frameHeight: rect.height,
+    url: getActivePreviewUrl()
+  }
+}
+
+function onPreviewOverlayPointerUp(e) {
+  if (!previewSelectMode.value) return
+  const target = e.currentTarget
+  if (previewSelectionDragging.value) {
+    previewSelectionDragging.value = false
+  }
+  try {
+    target?.releasePointerCapture?.(e.pointerId)
+  } catch {}
+}
+
+function clearPreviewSelection() {
+  previewSelectionDragging.value = false
+  previewSelection.value = null
+  lastWebviewElementSelection.value = null
+}
+
+function sendPreviewSelectionToChat() {
+  const sel = previewSelection.value || lastWebviewElementSelection.value
+  const url = getActivePreviewUrl()
+  if (!sel || !url || !window.monarco?.ai?.chat) return
+
+  const pct = (value, total) => {
+    if (!total) return 0
+    return Math.round((value / total) * 1000) / 10
+  }
+
+  const note = String(previewSelectionNote.value || '').trim()
+  let message = `Seleção no Preview\n\nURL: ${url}\n`
+  if (sel.cssPath) {
+    message += `Elemento: ${sel.tag}${sel.id ? '#' + sel.id : ''}${sel.classes && sel.classes.length ? '.' + sel.classes.join('.') : ''}\n`
+    message += `CSS Path: ${sel.cssPath}\n`
+    message += `BBox (px): x=${Math.round(sel.rect.x)}, y=${Math.round(sel.rect.y)}, w=${Math.round(sel.rect.width)}, h=${Math.round(sel.rect.height)}\n`
+  } else {
+    message += `Retângulo (px): x=${Math.round(sel.x)}, y=${Math.round(sel.y)}, w=${Math.round(sel.width)}, h=${Math.round(sel.height)}\n`
+    message += `Frame (px): w=${Math.round(sel.frameWidth)}, h=${Math.round(sel.frameHeight)}\n`
+    message += `Retângulo (%): x=${pct(sel.x, sel.frameWidth)}%, y=${pct(sel.y, sel.frameHeight)}%, w=${pct(sel.width, sel.frameWidth)}%, h=${pct(sel.height, sel.frameHeight)}%\n`
+  }
+  if (note) message += `Nota: ${note}\n`
+  message += `\nIdentifique os arquivos/fontes responsáveis e proponha alterações.`
+
+  if (!isAIChatOpen.value) openAIChat()
+  window.monarco.ai.chat(message)
+}
+
+function clampNumber(n, min, max) {
+  const v = Number.isFinite(n) ? n : 0
+  return Math.min(max, Math.max(min, v))
+}
+
+const lastWebviewElementSelection = ref(null)
+const hasAnySelection = computed(() => !!(previewSelection.value || lastWebviewElementSelection.value))
+
+watch(
+  () => miniPreviewWebview.value,
+  (el) => {
+    if (el) attachWebview()
+  }
+)
+
+watch(previewSelectMode, (enabled) => {
+  setWebviewSelectMode(enabled)
+})
+
+onMounted(() => {
+  attachWebview()
+})
+
+function attachWebview() {
+  const el = miniPreviewWebview.value
+  if (!el) return
+  el.removeEventListener?.('dom-ready', handleWebviewDomReady)
+  el.removeEventListener?.('console-message', handleWebviewConsoleMessage)
+  el.addEventListener('dom-ready', handleWebviewDomReady)
+  el.addEventListener('console-message', handleWebviewConsoleMessage)
+  if (previewSelectMode.value) {
+    // aguardará dom-ready para injetar
+  }
+}
+
+function handleWebviewDomReady() {
+  injectInspectorScript()
+  if (previewSelectMode.value) setWebviewSelectMode(true)
+}
+
+function handleWebviewConsoleMessage(e) {
+  const msg = String(e.message || '')
+  if (msg.startsWith('__MONARCO_SEL__')) {
+    try {
+      const payload = JSON.parse(msg.substring('__MONARCO_SEL__'.length))
+      lastWebviewElementSelection.value = payload
+      // Marca visual (não interferimos no webview, só guardamos info)
+    } catch {}
+  }
+}
+
+function setWebviewSelectMode(enabled) {
+  const el = miniPreviewWebview.value
+  if (!el) return
+  const script = `window.__monarcoSetSelectMode && window.__monarcoSetSelectMode(${enabled ? 'true' : 'false'})`
+  try { el.executeJavaScript(script) } catch {}
+}
+
+function injectInspectorScript() {
+  const el = miniPreviewWebview.value
+  if (!el) return
+  const script = `
+  (function(){
+    if (window.__monarcoInspectorInstalled) return;
+    window.__monarcoInspectorInstalled = true;
+    let active = false;
+    const overlay = document.createElement('div');
+    overlay.style.cssText = 'position:fixed;left:0;top:0;right:0;bottom:0;pointer-events:none;z-index:2147483645;';
+    const box = document.createElement('div');
+    box.style.cssText = 'position:fixed;border:2px solid #00d1b2;background:rgba(0,209,178,0.12);pointer-events:none;z-index:2147483646;';
+    const label = document.createElement('div');
+    label.style.cssText = 'position:fixed;padding:2px 6px;border-radius:6px;background:#00d1b2;color:#111;font:12px sans-serif;pointer-events:none;z-index:2147483647;';
+    document.documentElement.appendChild(overlay);
+    document.documentElement.appendChild(box);
+    document.documentElement.appendChild(label);
+    hide();
+    function hide(){ box.style.display='none'; label.style.display='none'; }
+    function show(){ box.style.display='block'; label.style.display='block'; }
+    function cssPath(el){
+      if (!el) return '';
+      const parts=[];
+      while(el && el.nodeType===1 && parts.length<6){
+        let sel = el.nodeName.toLowerCase();
+        if(el.id){ sel += '#'+el.id; parts.unshift(sel); break; }
+        const cls=[...el.classList||[]];
+        if(cls.length) sel += '.'+cls.join('.');
+        parts.unshift(sel);
+        el = el.parentElement;
+      }
+      return parts.join(' > ');
+    }
+    function onMove(ev){
+      if(!active) return;
+      const el = document.elementFromPoint(ev.clientX, ev.clientY);
+      if(!el) return hide();
+      const r = el.getBoundingClientRect();
+      box.style.left = r.left+'px'; box.style.top = r.top+'px'; box.style.width = r.width+'px'; box.style.height = r.height+'px';
+      const tag = el.tagName.toLowerCase();
+      const cls = (el.classList && el.classList.length)?'.'+[...el.classList].join('.'):'';
+      label.textContent = tag+cls;
+      label.style.left = (r.left+6)+'px'; label.style.top = (Math.max(0,r.top-22))+'px';
+      show();
+    }
+    function onClick(ev){
+      if(!active) return;
+      ev.preventDefault(); ev.stopPropagation();
+      const el = document.elementFromPoint(ev.clientX, ev.clientY);
+      if(!el){ return; }
+      const r = el.getBoundingClientRect();
+      const payload = {
+        tag: el.tagName.toLowerCase(),
+        id: el.id || '',
+        classes: [...(el.classList||[])],
+        rect: { x: r.left, y: r.top, width: r.width, height: r.height },
+        cssPath: cssPath(el)
+      };
+      console.log('__MONARCO_SEL__'+JSON.stringify(payload));
+    }
+    function setMode(val){
+      active = !!val;
+      document.documentElement.style.cursor = active ? 'crosshair' : '';
+      if(!active) hide();
+    }
+    window.__monarcoSetSelectMode = setMode;
+    document.addEventListener('mousemove', onMove, true);
+    document.addEventListener('click', onClick, true);
+  })();`
+  try { el.executeJavaScript(script) } catch {}
 }
 
 // Handler para ações do menu
@@ -3130,6 +3419,9 @@ onUnmounted(() => {
           <button @click="toggleAIChat" title="IA Chat (Ctrl+L)" :class="{ active: isAIChatOpen }">
             <span class="icon-comment-dots"></span>
           </button>
+          <button @click="openPreview()" title="Preview">
+            <span class="icon-globe"></span>
+          </button>
           <button @click="toggleTerminal" title="Terminal (Ctrl+`)">
             <span class="icon-terminal"></span>
           </button>
@@ -3619,10 +3911,45 @@ onUnmounted(() => {
 
       <div class="editor-terminal-container" :style="{ '--terminal-height': isTerminalOpen ? terminalHeight + 'px' : '0px' }">
         <div class="editorWrap" ref="monacoEditorRef">
-          <div v-if="!activeTab" class="emptyState">
-            Open a file from the explorer.
+          <div v-if="activeTab && activeTab.kind === 'preview'" class="mini-preview-root">
+            <div class="mini-preview-toolbar">
+              <input
+                class="mini-preview-address"
+                :value="activeTab.previewUrl || previewUrl"
+                @keydown.enter.prevent="(e) => { const url = e.target.value; openPreview(url) }"
+              />
+              <button class="mini-preview-btn" @click="openPreview(activeTab.previewUrl || previewUrl)">Ir</button>
+              <button
+                class="mini-preview-btn"
+                :class="{ 'mini-preview-btn-active': previewSelectMode }"
+                @click="togglePreviewSelectMode"
+              >
+                🖱️ Selecionar
+              </button>
+              <input
+                class="mini-preview-note"
+                v-model="previewSelectionNote"
+                placeholder="Nota p/ agente (opcional)"
+                :disabled="!previewSelectMode"
+              />
+              <button class="mini-preview-btn" :disabled="!hasAnySelection" @click="sendPreviewSelectionToChat">Enviar seleção</button>
+              <button class="mini-preview-btn" :disabled="!hasAnySelection" @click="clearPreviewSelection">Limpar</button>
+            </div>
+            <div class="mini-preview-frame">
+              <webview
+                ref="miniPreviewWebview"
+                class="mini-preview-webview"
+                :src="activeTab.previewUrl || previewUrl"
+                allowpopups="false"
+              ></webview>
+            </div>
           </div>
-          <div v-else ref="monacoContainer" class="monaco-editor-container"></div>
+          <template v-else>
+            <div v-if="!activeTab" class="emptyState">
+              Open a file from the explorer.
+            </div>
+            <div v-else ref="monacoContainer" class="monaco-editor-container"></div>
+          </template>
         </div>
 
         <!-- Terminal Resizer -->
@@ -3634,6 +3961,7 @@ onUnmounted(() => {
           ref="terminalRef"
           :style="{ height: terminalHeight + 'px' }"
           @close="closeTerminal"
+          @detected-url="openPreview"
         />
       </div>
 
