@@ -200,6 +200,7 @@ async function startWorkspaceWatcher(workspacePaths) {
 const CONFIG_DIR_NAME = '.monarco'
 const SETTINGS_FILE_NAME = 'settings.json'
 const CLI_TOOLS_DIR_NAME = 'cli'
+const AI_SESSIONS_DIR_NAME = 'ai-sessions'
 const CLI_STORE_RAW_URL = 'https://raw.githubusercontent.com/sousaakira/monarco/main/cli-store.json'
 
 const defaultSettings = {
@@ -219,31 +220,8 @@ const defaultSettings = {
     fontFamily: 'monospace',
     cursorBlink: true,
     cursorStyle: 'block',
-    activeProfileId: 'openclaude-openrouter',
-    profiles: [
-      {
-        id: 'openclaude-openrouter',
-        name: 'OpenClaude (OpenRouter)',
-        startupCommand: 'openclaude',
-        env: {
-          CLAUDE_CODE_USE_OPENAI: '1',
-          OPENAI_BASE_URL: 'https://openrouter.ai/api/v1',
-          OPENAI_API_KEY: '',
-          OPENAI_MODEL: 'qwen/qwen3.6-plus:free'
-        }
-      },
-      {
-        id: 'openclaude-local',
-        name: 'OpenClaude (Local)',
-        startupCommand: 'openclaude',
-        env: {
-          CLAUDE_CODE_USE_OPENAI: '1',
-          OPENAI_BASE_URL: 'http://192.168.1.19:11434/v1',
-          OPENAI_API_KEY: 'sk-fake',
-          OPENAI_MODEL: 'glm-5:cloud'
-        }
-      }
-    ]
+    activeProfileId: '',
+    profiles: []
   },
   panels: {
     aiChat: { open: false, width: 400 },
@@ -275,6 +253,67 @@ function getSettingsPath() {
 
 function getCliToolsDir() {
   return path.join(getConfigDir(), CLI_TOOLS_DIR_NAME)
+}
+
+function getAiSessionsDir() {
+  return path.join(getConfigDir(), AI_SESSIONS_DIR_NAME)
+}
+
+async function ensureAiSessionsDir() {
+  await ensureConfigDir()
+  const dir = getAiSessionsDir()
+  try {
+    await fs.mkdir(dir, { recursive: true })
+  } catch {}
+  return dir
+}
+
+function sanitizeFileName(name) {
+  return String(name || '').replace(/[^a-zA-Z0-9._-]/g, '_')
+}
+
+function getAiSessionFilePath(resumeId) {
+  const safe = sanitizeFileName(resumeId || 'unknown')
+  return path.join(getAiSessionsDir(), `${safe}.json`)
+}
+
+function emitAiSessionsChanged(payload) {
+  for (const w of BrowserWindow.getAllWindows()) {
+    try {
+      w.webContents.send('aiSessions:changed', payload)
+    } catch {}
+  }
+}
+
+// AI Profiles (perfis de terminal para CLIs) em arquivos separados
+function getAiProfilesDir() {
+  return path.join(getAiSessionsDir(), 'profiles')
+}
+
+async function ensureAiProfilesDir() {
+  await ensureAiSessionsDir()
+  const dir = getAiProfilesDir()
+  try {
+    await fs.mkdir(dir, { recursive: true })
+  } catch {}
+  return dir
+}
+
+function getAiProfileFilePath(id) {
+  const safe = sanitizeFileName(id || 'unknown')
+  return path.join(getAiProfilesDir(), `${safe}.json`)
+}
+
+function getAiProfilesStatePath() {
+  return path.join(getAiProfilesDir(), '_state.json')
+}
+
+function emitAiProfilesChanged(payload) {
+  for (const w of BrowserWindow.getAllWindows()) {
+    try {
+      w.webContents.send('aiProfiles:changed', payload)
+    } catch {}
+  }
 }
 
 function getCliToolsPackageJsonPath() {
@@ -392,17 +431,126 @@ async function saveSettings(settingsPatch) {
   const current = await loadSettings()
   const merged = mergeSettings(current, settingsPatch)
   const content = JSON.stringify(merged, null, 2)
-  const tmpPath = settingsPath + '.tmp'
-  await fs.writeFile(tmpPath, content, 'utf8')
-  try {
-    await fs.rename(tmpPath, settingsPath)
-  } catch (e) {
+  const lockPath = settingsPath + '.lock'
+  const tmpPath = `${settingsPath}.${process.pid}.${Date.now()}.tmp`
+  let lockHandle = null
+
+  for (let i = 0; i < 80; i++) {
     try {
-      await fs.unlink(settingsPath)
-    } catch {}
-    await fs.rename(tmpPath, settingsPath)
+      lockHandle = await fs.open(lockPath, 'wx')
+      break
+    } catch (e) {
+      if (e && typeof e === 'object' && e.code === 'EEXIST') {
+        await new Promise((r) => setTimeout(r, 25))
+        continue
+      }
+      throw e
+    }
+  }
+
+  if (!lockHandle) {
+    throw new Error('Timeout acquiring settings lock')
+  }
+
+  try {
+    await fs.writeFile(tmpPath, content, 'utf8')
+    try {
+      await fs.rename(tmpPath, settingsPath)
+    } catch (e) {
+      if (process.platform === 'win32') {
+        const bakPath = `${settingsPath}.${process.pid}.${Date.now()}.bak`
+        let moved = false
+        try {
+          if (existsSync(settingsPath)) {
+            await fs.rename(settingsPath, bakPath)
+            moved = true
+          }
+          await fs.rename(tmpPath, settingsPath)
+          if (moved) {
+            try { await fs.unlink(bakPath) } catch {}
+          }
+        } catch (e2) {
+          if (moved && !existsSync(settingsPath)) {
+            try { await fs.rename(bakPath, settingsPath) } catch {}
+          }
+          throw e2
+        }
+      } else {
+        throw e
+      }
+    } finally {
+      try { await fs.unlink(tmpPath) } catch {}
+    }
+  } finally {
+    try { await lockHandle.close() } catch {}
+    try { await fs.unlink(lockPath) } catch {}
   }
   return merged
+}
+
+async function aiSessionsList({ limit = 50 } = {}) {
+  await ensureAiSessionsDir()
+  const dir = getAiSessionsDir()
+  let entries = []
+  try {
+    entries = await fs.readdir(dir, { withFileTypes: true })
+  } catch {
+    return []
+  }
+  const files = entries.filter((e) => e.isFile() && e.name.endsWith('.json')).map((e) => e.name)
+  const sessions = []
+  for (const file of files) {
+    try {
+      const content = await fs.readFile(path.join(dir, file), 'utf8')
+      const parsed = JSON.parse(content)
+      if (!parsed || typeof parsed !== 'object') continue
+      if (typeof parsed.resumeCommand !== 'string' || parsed.resumeCommand.trim().length === 0) continue
+      sessions.push(parsed)
+    } catch {}
+  }
+  sessions.sort((a, b) => String(b.updatedAt || '').localeCompare(String(a.updatedAt || '')))
+  return sessions.slice(0, Math.max(1, Math.min(200, Number(limit) || 50)))
+}
+
+async function aiSessionsUpsert(session) {
+  if (!session || typeof session !== 'object') throw new Error('Invalid session')
+  const resumeId = String(session.resumeId || '').trim()
+  const resumeCommand = String(session.resumeCommand || '').trim()
+  if (!resumeId || !resumeCommand) throw new Error('Missing resumeId/resumeCommand')
+
+  await ensureAiSessionsDir()
+  const filePath = getAiSessionFilePath(resumeId)
+  const normalized = {
+    tool: String(session.tool || '').trim(),
+    resumeId,
+    resumeCommand,
+    profileId: String(session.profileId || '').trim(),
+    name: String(session.name || '').trim(),
+    updatedAt: String(session.updatedAt || new Date().toISOString()).trim()
+  }
+  const content = JSON.stringify(normalized, null, 2)
+  const tmpPath = filePath + '.tmp'
+  await fs.writeFile(tmpPath, content, 'utf8')
+  try {
+    await fs.rename(tmpPath, filePath)
+  } catch {
+    try { await fs.unlink(filePath) } catch {}
+    await fs.rename(tmpPath, filePath)
+  }
+  emitAiSessionsChanged({ type: 'upsert', resumeId })
+  return normalized
+}
+
+async function aiSessionsRemove(resumeId) {
+  const id = String(resumeId || '').trim()
+  if (!id) throw new Error('Invalid resumeId')
+  await ensureAiSessionsDir()
+  const filePath = getAiSessionFilePath(id)
+  try {
+    await fs.unlink(filePath)
+  } catch {}
+  emitAiSessionsChanged({ type: 'remove', resumeId: id })
+  return { ok: true }
 }
 
 async function checkNodeAndNpm() {
@@ -1573,6 +1721,92 @@ app.whenReady().then(async () => {
     }
     await ensureCliToolsProject()
     return getCliToolsBinDir()
+  })
+
+  // ===== AI CLI Sessions (persisted as separate files) =====
+  ipcMain.handle('aiSessions:list', async (_evt, options = {}) => {
+    return await aiSessionsList({ limit: options?.limit })
+  })
+
+  ipcMain.handle('aiSessions:upsert', async (_evt, session) => {
+    return await aiSessionsUpsert(session)
+  })
+
+  ipcMain.handle('aiSessions:remove', async (_evt, resumeId) => {
+    return await aiSessionsRemove(resumeId)
+  })
+
+  // AI Profiles
+  ipcMain.handle('aiProfiles:list', async () => {
+    await ensureAiProfilesDir()
+    let profiles = []
+    try {
+      const entries = await fs.readdir(getAiProfilesDir(), { withFileTypes: true })
+      for (const e of entries) {
+        if (!e.isFile() || !e.name.endsWith('.json')) continue
+        if (e.name === '_state.json') continue
+        try {
+          const content = await fs.readFile(path.join(getAiProfilesDir(), e.name), 'utf8')
+          const p = JSON.parse(content)
+          if (p && typeof p === 'object' && typeof p.id === 'string') profiles.push(p)
+        } catch {}
+      }
+    } catch {}
+    let activeProfileId = ''
+    try {
+      const stateContent = await fs.readFile(getAiProfilesStatePath(), 'utf8')
+      const state = JSON.parse(stateContent)
+      activeProfileId = String(state?.activeProfileId || '')
+    } catch {}
+    profiles.sort((a, b) => String(a.name || a.id).localeCompare(String(b.name || b.id)))
+    return { profiles, activeProfileId }
+  })
+
+  ipcMain.handle('aiProfiles:upsert', async (_evt, profile) => {
+    if (!profile || typeof profile !== 'object' || typeof profile.id !== 'string' || profile.id.trim().length === 0) {
+      throw new Error('Invalid profile')
+    }
+    await ensureAiProfilesDir()
+    const filePath = getAiProfileFilePath(profile.id)
+    const normalized = {
+      id: String(profile.id).trim(),
+      name: String(profile.name || '').trim() || String(profile.id).trim(),
+      startupCommand: String(profile.startupCommand || '').trim(),
+      env: profile.env && typeof profile.env === 'object' ? profile.env : {}
+    }
+    const content = JSON.stringify(normalized, null, 2)
+    await fs.writeFile(filePath, content, 'utf8')
+    emitAiProfilesChanged({ type: 'upsert', id: normalized.id })
+    return normalized
+  })
+
+  ipcMain.handle('aiProfiles:remove', async (_evt, id) => {
+    const pid = String(id || '').trim()
+    if (!pid) throw new Error('Invalid id')
+    await ensureAiProfilesDir()
+    const filePath = getAiProfileFilePath(pid)
+    try { await fs.unlink(filePath) } catch {}
+    // Se o ativo for esse, limpar
+    try {
+      const statePath = getAiProfilesStatePath()
+      const content = await fs.readFile(statePath, 'utf8')
+      const state = JSON.parse(content)
+      if (String(state?.activeProfileId || '') === pid) {
+        const next = { activeProfileId: '' }
+        await fs.writeFile(statePath, JSON.stringify(next, null, 2), 'utf8')
+      }
+    } catch {}
+    emitAiProfilesChanged({ type: 'remove', id: pid })
+    return { ok: true }
+  })
+
+  ipcMain.handle('aiProfiles:setActive', async (_evt, id) => {
+    await ensureAiProfilesDir()
+    const statePath = getAiProfilesStatePath()
+    const next = { activeProfileId: String(id || '').trim() }
+    await fs.writeFile(statePath, JSON.stringify(next, null, 2), 'utf8')
+    emitAiProfilesChanged({ type: 'active', id: next.activeProfileId })
+    return next
   })
 
   // ===== AI Agent Handlers =====
