@@ -48,6 +48,7 @@
 /* Font Awesome Icons */
 .icon-floppy-disk,
 .icon-gear,
+.icon-globe,
 .icon-folder-open,
 .icon-file-plus,
 .icon-folder-plus,
@@ -116,6 +117,10 @@
 
 .icon-comment-dots {
   background-image: url('./fonts/solid/comment-dots.svg');
+}
+
+.icon-globe {
+  background-image: url('./fonts/solid/globe.svg');
 }
 
 .icon-window-minimize {
