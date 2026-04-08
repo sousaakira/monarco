@@ -58,7 +58,7 @@ defineEmits(['select', 'close'])
   gap: 0;
   overflow-x: auto;
   background: var(--panel-2);
-  border-bottom: 1px solid var(--border);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
   min-height: 36px;
   flex-shrink: 0;
 
@@ -67,7 +67,7 @@ defineEmits(['select', 'close'])
 }
 
 .tabs::-webkit-scrollbar {
-  height: 6px;
+  height: 4px;
 }
 
 .tabs::-webkit-scrollbar-track {
@@ -80,47 +80,67 @@ defineEmits(['select', 'close'])
 }
 
 .tabs:hover {
-  scrollbar-color: rgba(255, 255, 255, 0.22) transparent;
+  scrollbar-color: rgba(255, 255, 255, 0.15) transparent;
 }
 
 .tabs:hover::-webkit-scrollbar-thumb {
-  background: rgba(255, 255, 255, 0.22);
+  background: rgba(255, 255, 255, 0.15);
 }
 
 .tab {
   display: flex;
   align-items: center;
   gap: 6px;
-  padding: 0 6px;
+  padding: 0 12px;
   height: 36px;
-  background: var(--tab-inactive-bg, var(--monaco-tab-inactive-bg, #2d2d2d));
-  color: var(--tab-inactive-fg, var(--monaco-tab-inactive-fg, rgba(255, 255, 255, 0.5)));
-  font-size: 13px;
+  background: transparent;
+  color: rgba(255, 255, 255, 0.45);
+  font-size: 12.5px;
+  font-weight: 400;
+  letter-spacing: 0.01em;
   cursor: pointer;
   white-space: nowrap;
-  border-right: 1px solid var(--border);
-  transition: background 0.15s ease;
+  border-right: 1px solid rgba(255, 255, 255, 0.04);
+  transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
   user-select: none;
+  position: relative;
 }
 
 .tab:hover {
-  background: var(--list-hover);
+  background: rgba(255, 255, 255, 0.04);
+  color: rgba(255, 255, 255, 0.7);
 }
 
 .tab.active {
-  background: var(--tab-active-bg, var(--monaco-tab-active-bg, var(--panel)));
-  color: var(--tab-active-fg, var(--monaco-tab-active-fg, #fff));
-  border-bottom: 2px solid var(--accent);
-  height: 35px;
-  padding-bottom: 1px;
+  background: rgba(255, 255, 255, 0.06);
+  color: rgba(255, 255, 255, 0.95);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+  margin-bottom: -1px;
+}
+
+.tab.active::after {
+  content: '';
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  height: 2px;
+  background: linear-gradient(90deg, var(--accent), color-mix(in srgb, var(--accent) 80%, white));
+  border-radius: 1px 1px 0 0;
 }
 
 .tab .dirty {
-  width: 8px;
-  height: 8px;
-  background: var(--accent);
+  width: 7px;
+  height: 7px;
+  background: rgba(255, 255, 255, 0.5);
   border-radius: 50%;
   flex-shrink: 0;
+  transition: all 0.2s ease;
+}
+
+.tab.active .dirty {
+  background: var(--accent);
+  box-shadow: 0 0 6px color-mix(in srgb, var(--accent) 50%, transparent);
 }
 
 .tab .file-icon {
@@ -130,43 +150,58 @@ defineEmits(['select', 'close'])
   background-size: contain;
   background-repeat: no-repeat;
   background-position: center;
-  opacity: 0.95;
+  opacity: 0.8;
+  transition: opacity 0.2s ease;
+}
+
+.tab:hover .file-icon,
+.tab.active .file-icon {
+  opacity: 1;
 }
 
 .tab .label {
   overflow: hidden;
   text-overflow: ellipsis;
+  max-width: 160px;
 }
 
 .tab .close {
   width: 18px;
   height: 18px;
   padding: 0;
-  margin-left: 4px;
+  margin-left: 2px;
   border: none;
   background: transparent;
-  color: var(--muted);
-  font-size: 14px;
+  color: rgba(255, 255, 255, 0.4);
+  font-size: 15px;
+  font-weight: 300;
   line-height: 1;
-  border-radius: 4px;
+  border-radius: 3px;
   cursor: pointer;
   display: flex;
   align-items: center;
   justify-content: center;
   opacity: 0;
-  transition: opacity 0.1s ease, background 0.1s ease;
+  transition: all 0.15s ease;
 }
 
 .tab:hover .close {
-  opacity: 1;
+  opacity: 0.6;
 }
 
 .tab .close:hover {
-  background: rgba(255, 255, 255, 0.1);
-  color: var(--text);
+  background: rgba(255, 77, 77, 0.15);
+  color: #ff6b6b;
+  opacity: 1;
 }
 
 .tab.active .close {
+  opacity: 0.7;
+}
+
+.tab.active .close:hover {
+  background: rgba(255, 77, 77, 0.2);
+  color: #ff6b6b;
   opacity: 1;
 }
 </style>
