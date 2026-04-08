@@ -5,6 +5,7 @@
       :key="tab.path"
       class="tab"
       :class="{ active: tab.path === activePath }"
+      :title="tab.path"
       @click="$emit('select', tab.path)"
     >
       <span v-if="tab.dirty" class="dirty" />

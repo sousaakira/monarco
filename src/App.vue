@@ -16,6 +16,7 @@ import EditorTabs from './components/EditorTabs.vue'
 import TerminalPanel from './components/Terminal.vue'
 import Toast from './components/Toast.vue'
 import CommandPalette from './components/CommandPalette.vue'
+import QuickOpen from './components/QuickOpen.vue'
 import { applyThemeToMonaco, applyThemeToUi, getThemeOptions } from './themeRegistry.js'
 
 // Monaco Editor instance
@@ -153,6 +154,9 @@ const runningScripts = ref(new Set())
 
 // Command Palette state
 const showCommandPalette = ref(false)
+
+// Quick Open state (Ctrl+P)
+const showQuickOpen = ref(false)
 
 // Ctrl+K Inline Edit state
 const showCtrlKPopup = ref(false)
@@ -2961,6 +2965,12 @@ function executeCommandPaletteAction(command) {
   }
 }
 
+function handleQuickOpenFile(file) {
+  if (file && file.path) {
+    openFile(file.path)
+  }
+}
+
 // ========================================
 // CTRL+K - Edição Inline com IA
 // ========================================
@@ -3193,6 +3203,12 @@ function onKeyDown(e) {
   if (isCmdOrCtrl && e.key === '`') {
     e.preventDefault()
     toggleTerminal()
+  }
+
+  // Ctrl+P para Quick Open (buscar arquivos)
+  if (isCmdOrCtrl && e.key.toLowerCase() === 'p' && !e.shiftKey) {
+    e.preventDefault()
+    showQuickOpen.value = true
   }
 
   // Ctrl+Shift+P para Command Palette
@@ -4119,6 +4135,14 @@ onUnmounted(() => {
     :commands="commandPaletteCommands"
     @close="showCommandPalette = false"
     @execute="executeCommandPaletteAction"
+  />
+  
+  <!-- Quick Open (Ctrl+P) -->
+  <QuickOpen
+    :is-open="showQuickOpen"
+    :workspace-folders="workspaceFolders"
+    @close="showQuickOpen = false"
+    @open-file="handleQuickOpenFile"
   />
   
   <!-- Ctrl+K Inline Edit Widget -->

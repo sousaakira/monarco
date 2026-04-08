@@ -384,6 +384,8 @@ const categories = [
 const shortcuts = [
   { id: 'save', label: 'Salvar arquivo', keys: ['Ctrl', 'S'] },
   { id: 'find', label: 'Buscar no arquivo', keys: ['Ctrl', 'F'] },
+  { id: 'quickopen', label: 'Buscar arquivos (Quick Open)', keys: ['Ctrl', 'P'] },
+  { id: 'commandPalette', label: 'Paleta de Comandos', keys: ['Ctrl', 'Shift', 'P'] },
   { id: 'openAI', label: 'Abrir assistente IA', keys: ['Ctrl', 'L'] },
   { id: 'terminal', label: 'Abrir/Fechar terminal', keys: ['Ctrl', '`'] },
   { id: 'settings', label: 'Abrir configurações', keys: ['Ctrl', 'Shift', ','] },
