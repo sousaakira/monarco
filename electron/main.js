@@ -896,6 +896,10 @@ app.whenReady().then(async () => {
     return win.isMaximized()
   })
 
+  ipcMain.handle('webview:getPreloadPath', async () => {
+    return path.join(app.getAppPath(), 'electron', 'webview-preload.cjs')
+  })
+
   ipcMain.handle('workspace:select', async () => {
     try {
       log('info', 'ipc:workspace:select', 'Iniciando seleção de workspace')

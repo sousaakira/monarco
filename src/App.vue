@@ -25,7 +25,7 @@ let resizeObserver = null
 let autocompleteProviderDisposable = null
 
 // Autocomplete state
-const autocompleteEnabled = ref(false) // Desabilitado por padrão - habilitar apenas com servidor IA local
+const autocompleteEnabled = ref(true)
 const isAutocompleteLoading = ref(false)
 let autocompleteAbortController = null
 
@@ -63,6 +63,7 @@ const previewSelectionNote = ref('')
 const previewSelectionStart = ref({ x: 0, y: 0 })
 const previewSelectionDragging = ref(false)
 const miniPreviewWebview = ref(null)
+const webviewPreloadPath = ref('')
 
 // Active view state
 const activeView = ref('explorer')
@@ -715,8 +716,39 @@ function clearPickedColor() {
   pickedColor.value = null
 }
 
+async function clipboardWriteText(text) {
+  const value = String(text ?? '')
+  try {
+    const api = window.monarco?.clipboard
+    if (api && typeof api.writeText === 'function') {
+      await api.writeText(value)
+      return
+    }
+  } catch {}
+  try {
+    if (navigator.clipboard?.writeText) {
+      await navigator.clipboard.writeText(value)
+    }
+  } catch {}
+}
+
+async function clipboardReadText() {
+  try {
+    const api = window.monarco?.clipboard
+    if (api && typeof api.readText === 'function') {
+      return await api.readText()
+    }
+  } catch {}
+  try {
+    if (navigator.clipboard?.readText) {
+      return await navigator.clipboard.readText()
+    }
+  } catch {}
+  return ''
+}
+
 function copyToClipboard(text) {
-  navigator.clipboard.writeText(text).then(() => {
+  clipboardWriteText(text).then(() => {
     console.log('Cor copiada:', text)
   })
 }
@@ -876,7 +908,7 @@ function onContextMenuCopyPath() {
   const n = contextMenu.value.node
   closeContextMenu()
   if (!n) return
-  navigator.clipboard.writeText(n.path)
+  void clipboardWriteText(n.path)
 }
 
 function onContextMenuCopyRelativePath() {
@@ -887,7 +919,7 @@ function onContextMenuCopyRelativePath() {
   if (!root) return
   const prefix = root.endsWith('/') ? root : root + '/'
   const relativePath = n.path.startsWith(prefix) ? n.path.slice(prefix.length) : n.path
-  navigator.clipboard.writeText(relativePath)
+  void clipboardWriteText(relativePath)
 }
 
 function getSelectedDirPath() {
@@ -1214,38 +1246,45 @@ function onPreviewOverlayPointerUp(e) {
   } catch {}
 }
 
-function clearPreviewSelection() {
-  previewSelectionDragging.value = false
-  previewSelection.value = null
-  lastWebviewElementSelection.value = null
-}
-
 function sendPreviewSelectionToChat() {
   const sel = previewSelection.value || lastWebviewElementSelection.value
-  const url = getActivePreviewUrl()
-  if (!sel || !url || !window.monarco?.ai?.chat) return
-
-  const pct = (value, total) => {
-    if (!total) return 0
-    return Math.round((value / total) * 1000) / 10
-  }
+  if (!sel) return
 
   const note = String(previewSelectionNote.value || '').trim()
-  let message = `Seleção no Preview\n\nURL: ${url}\n`
+  let message = `@front\n`
   if (sel.cssPath) {
-    message += `Elemento: ${sel.tag}${sel.id ? '#' + sel.id : ''}${sel.classes && sel.classes.length ? '.' + sel.classes.join('.') : ''}\n`
-    message += `CSS Path: ${sel.cssPath}\n`
-    message += `BBox (px): x=${Math.round(sel.rect.x)}, y=${Math.round(sel.rect.y)}, w=${Math.round(sel.rect.width)}, h=${Math.round(sel.rect.height)}\n`
+    message += `${sel.tag}${sel.id ? '#' + sel.id : ''}${sel.classes && sel.classes.length ? '.' + sel.classes.join('.') : ''}`
+    const url = getActivePreviewUrl()
+    if (url) {
+      try {
+        const u = new URL(url)
+        const route = (u.pathname || '/') + (u.search || '') + (u.hash || '')
+        message += `\n${route || '/'}`
+      } catch {
+        message += `\n${url}`
+      }
+    }
   } else {
-    message += `Retângulo (px): x=${Math.round(sel.x)}, y=${Math.round(sel.y)}, w=${Math.round(sel.width)}, h=${Math.round(sel.height)}\n`
-    message += `Frame (px): w=${Math.round(sel.frameWidth)}, h=${Math.round(sel.frameHeight)}\n`
-    message += `Retângulo (%): x=${pct(sel.x, sel.frameWidth)}%, y=${pct(sel.y, sel.frameHeight)}%, w=${pct(sel.width, sel.frameWidth)}%, h=${pct(sel.height, sel.frameHeight)}%\n`
+    message += `Área: x=${Math.round(sel.x)} y=${Math.round(sel.y)} w=${Math.round(sel.width)} h=${Math.round(sel.height)}\n`
+    const url = getActivePreviewUrl()
+    if (url) message += `URL: ${url}\n`
   }
-  if (note) message += `Nota: ${note}\n`
-  message += `\nIdentifique os arquivos/fontes responsáveis e proponha alterações.`
+  if (note) message += `\n${note}`
 
   if (!isAIChatOpen.value) openAIChat()
-  window.monarco.ai.chat(message)
+  nextTick(() => {
+    try {
+      window.dispatchEvent(new CustomEvent('monarco:ai:ingest', { detail: { text: message } }))
+    } catch {}
+  })
+  void clipboardWriteText(message)
+  window.monarcoToast?.success?.('Seleção enviada para o chat (texto copiado)')
+}
+
+function openPreviewDevTools() {
+  const el = miniPreviewWebview.value
+  if (!el) return
+  try { el.openDevTools({ mode: 'detach' }) } catch {}
 }
 
 function clampNumber(n, min, max) {
@@ -1254,7 +1293,6 @@ function clampNumber(n, min, max) {
 }
 
 const lastWebviewElementSelection = ref(null)
-const hasAnySelection = computed(() => !!(previewSelection.value || lastWebviewElementSelection.value))
 
 watch(
   () => miniPreviewWebview.value,
@@ -1269,23 +1307,33 @@ watch(previewSelectMode, (enabled) => {
 
 onMounted(() => {
   attachWebview()
+  loadWebviewPreloadPath()
 })
+
+async function loadWebviewPreloadPath() {
+  try {
+    const p = await window.monarco?.webview?.getPreloadPath?.()
+    if (!p) return
+    webviewPreloadPath.value = p.startsWith('file://') ? p : `file://${p}`
+  } catch {}
+}
 
 function attachWebview() {
   const el = miniPreviewWebview.value
   if (!el) return
   el.removeEventListener?.('dom-ready', handleWebviewDomReady)
   el.removeEventListener?.('console-message', handleWebviewConsoleMessage)
+  el.removeEventListener?.('ipc-message', handleWebviewIpcMessage)
   el.addEventListener('dom-ready', handleWebviewDomReady)
   el.addEventListener('console-message', handleWebviewConsoleMessage)
+  el.addEventListener('ipc-message', handleWebviewIpcMessage)
   if (previewSelectMode.value) {
     // aguardará dom-ready para injetar
   }
 }
 
 function handleWebviewDomReady() {
-  injectInspectorScript()
-  if (previewSelectMode.value) setWebviewSelectMode(true)
+  setWebviewSelectMode(previewSelectMode.value)
 }
 
 function handleWebviewConsoleMessage(e) {
@@ -1296,86 +1344,38 @@ function handleWebviewConsoleMessage(e) {
       lastWebviewElementSelection.value = payload
       // Marca visual (não interferimos no webview, só guardamos info)
     } catch {}
+    return
+  }
+  if (msg.startsWith('__MONARCO_ADD__')) {
+    try {
+      const payload = JSON.parse(msg.substring('__MONARCO_ADD__'.length))
+      lastWebviewElementSelection.value = payload
+      sendPreviewSelectionToChat()
+    } catch {}
   }
 }
 
 function setWebviewSelectMode(enabled) {
   const el = miniPreviewWebview.value
   if (!el) return
-  const script = `window.__monarcoSetSelectMode && window.__monarcoSetSelectMode(${enabled ? 'true' : 'false'})`
-  try { el.executeJavaScript(script) } catch {}
+  try { el.send('monarco-select-mode', !!enabled) } catch {}
 }
 
-function injectInspectorScript() {
-  const el = miniPreviewWebview.value
-  if (!el) return
-  const script = `
-  (function(){
-    if (window.__monarcoInspectorInstalled) return;
-    window.__monarcoInspectorInstalled = true;
-    let active = false;
-    const overlay = document.createElement('div');
-    overlay.style.cssText = 'position:fixed;left:0;top:0;right:0;bottom:0;pointer-events:none;z-index:2147483645;';
-    const box = document.createElement('div');
-    box.style.cssText = 'position:fixed;border:2px solid #00d1b2;background:rgba(0,209,178,0.12);pointer-events:none;z-index:2147483646;';
-    const label = document.createElement('div');
-    label.style.cssText = 'position:fixed;padding:2px 6px;border-radius:6px;background:#00d1b2;color:#111;font:12px sans-serif;pointer-events:none;z-index:2147483647;';
-    document.documentElement.appendChild(overlay);
-    document.documentElement.appendChild(box);
-    document.documentElement.appendChild(label);
-    hide();
-    function hide(){ box.style.display='none'; label.style.display='none'; }
-    function show(){ box.style.display='block'; label.style.display='block'; }
-    function cssPath(el){
-      if (!el) return '';
-      const parts=[];
-      while(el && el.nodeType===1 && parts.length<6){
-        let sel = el.nodeName.toLowerCase();
-        if(el.id){ sel += '#'+el.id; parts.unshift(sel); break; }
-        const cls=[...el.classList||[]];
-        if(cls.length) sel += '.'+cls.join('.');
-        parts.unshift(sel);
-        el = el.parentElement;
-      }
-      return parts.join(' > ');
-    }
-    function onMove(ev){
-      if(!active) return;
-      const el = document.elementFromPoint(ev.clientX, ev.clientY);
-      if(!el) return hide();
-      const r = el.getBoundingClientRect();
-      box.style.left = r.left+'px'; box.style.top = r.top+'px'; box.style.width = r.width+'px'; box.style.height = r.height+'px';
-      const tag = el.tagName.toLowerCase();
-      const cls = (el.classList && el.classList.length)?'.'+[...el.classList].join('.'):'';
-      label.textContent = tag+cls;
-      label.style.left = (r.left+6)+'px'; label.style.top = (Math.max(0,r.top-22))+'px';
-      show();
-    }
-    function onClick(ev){
-      if(!active) return;
-      ev.preventDefault(); ev.stopPropagation();
-      const el = document.elementFromPoint(ev.clientX, ev.clientY);
-      if(!el){ return; }
-      const r = el.getBoundingClientRect();
-      const payload = {
-        tag: el.tagName.toLowerCase(),
-        id: el.id || '',
-        classes: [...(el.classList||[])],
-        rect: { x: r.left, y: r.top, width: r.width, height: r.height },
-        cssPath: cssPath(el)
-      };
-      console.log('__MONARCO_SEL__'+JSON.stringify(payload));
-    }
-    function setMode(val){
-      active = !!val;
-      document.documentElement.style.cursor = active ? 'crosshair' : '';
-      if(!active) hide();
-    }
-    window.__monarcoSetSelectMode = setMode;
-    document.addEventListener('mousemove', onMove, true);
-    document.addEventListener('click', onClick, true);
-  })();`
-  try { el.executeJavaScript(script) } catch {}
+function handleWebviewIpcMessage(e) {
+  const channel = String(e.channel || '')
+  const payload = e.args?.[0]
+  if (channel === 'monarco-selected') {
+    lastWebviewElementSelection.value = payload
+    return
+  }
+  if (channel === 'monarco-add') {
+    lastWebviewElementSelection.value = payload
+    sendPreviewSelectionToChat()
+    return
+  }
+  if (channel === 'monarco-error') {
+    window.monarcoToast?.error?.('Preview inspector falhou', { description: payload?.message || String(payload || '') })
+  }
 }
 
 // Handler para ações do menu
@@ -1422,7 +1422,7 @@ function handleMenuAction(action) {
       break
     case 'paste':
       // Paste precisa de tratamento especial devido às permissões do clipboard
-      navigator.clipboard.readText().then((text) => {
+      clipboardReadText().then((text) => {
         if (monacoInstance) {
           monacoInstance.trigger('keyboard', 'paste', { text })
         }
@@ -1689,18 +1689,15 @@ function registerInlineCompletionProvider() {
       provideInlineCompletions: async (model, position, context, token) => {
         // Verifica se autocomplete está habilitado
         if (!autocompleteEnabled.value) {
-          return { items: [] }
+          return { items: [], dispose: () => {} }
         }
         
         // Ignora se já está mostrando suggestions normais ou se foi trigger manual
         if (context.triggerKind !== monaco.languages.InlineCompletionTriggerKind.Automatic) {
-          return { items: [] }
+          return { items: [], dispose: () => {} }
         }
         
-        // Verifica se o serviço de autocomplete está disponível
-        if (!window.monarco?.ai?.autocomplete?.complete) {
-          return { items: [] }
-        }
+        const aiComplete = window.monarco?.ai?.autocomplete?.complete
         
         // Obtém o texto antes e depois do cursor
         const textBeforeCursor = model.getValueInRange({
@@ -1719,7 +1716,11 @@ function registerInlineCompletionProvider() {
         
         // Não faz autocomplete se o texto é muito pequeno
         if (textBeforeCursor.trim().length < 10) {
-          return { items: [] }
+          const fallback = buildWordInlineFallback(model, position)
+          if (fallback) {
+            return { items: [fallback], dispose: () => {} }
+          }
+          return { items: [], dispose: () => {} }
         }
         
         // Detecta linguagem
@@ -1735,40 +1736,48 @@ function registerInlineCompletionProvider() {
         try {
           isAutocompleteLoading.value = true
           
-          // Chama o serviço de autocomplete
-          const result = await window.monarco.ai.autocomplete.complete({
-            prefix: textBeforeCursor,
-            suffix: textAfterCursor,
-            language: language,
-            filePath: filePath
-          })
+          if (aiComplete) {
+            const result = await aiComplete({
+              prefix: textBeforeCursor,
+              suffix: textAfterCursor,
+              language: language,
+              filePath: filePath
+            })
           
-          // Verifica se foi cancelado
-          if (token.isCancellationRequested || result.aborted) {
-            return { items: [] }
-          }
+            if (token.isCancellationRequested || result.aborted) {
+              return { items: [], dispose: () => {} }
+            }
           
-          // Retorna a compleção
-          if (result.insertText && result.insertText.trim()) {
-            return {
-              items: [{
-                insertText: result.insertText,
-                range: {
-                  startLineNumber: position.lineNumber,
-                  startColumn: position.column,
-                  endLineNumber: position.lineNumber,
-                  endColumn: position.column
-                }
-              }]
+            if (result.insertText && result.insertText.trim()) {
+              return {
+                items: [{
+                  insertText: result.insertText,
+                  range: {
+                    startLineNumber: position.lineNumber,
+                    startColumn: position.column,
+                    endLineNumber: position.lineNumber,
+                    endColumn: position.column
+                  }
+                }],
+                dispose: () => {}
+              }
             }
           }
           
-          return { items: [] }
+          const fallback = buildWordInlineFallback(model, position)
+          if (fallback) {
+            return { items: [fallback], dispose: () => {} }
+          }
+          return { items: [], dispose: () => {} }
         } catch (error) {
           if (error.name !== 'AbortError') {
             console.error('Autocomplete error:', error)
           }
-          return { items: [] }
+          const fallback = buildWordInlineFallback(model, position)
+          if (fallback) {
+            return { items: [fallback], dispose: () => {} }
+          }
+          return { items: [], dispose: () => {} }
         } finally {
           isAutocompleteLoading.value = false
         }
@@ -1779,6 +1788,44 @@ function registerInlineCompletionProvider() {
       }
     }
   )
+}
+
+function buildWordInlineFallback(model, position) {
+  try {
+    const word = model.getWordUntilPosition(position)
+    const current = String(word.word || '')
+    if (current.length < 2) return null
+
+    const fullText = model.getValue()
+    const wordPattern = /\b[a-zA-Z_][a-zA-Z0-9_]{2,}\b/g
+    const candidates = new Set()
+    let match
+    while ((match = wordPattern.exec(fullText)) !== null) {
+      candidates.add(match[0])
+      if (candidates.size > 4000) break
+    }
+
+    const lowerCurrent = current.toLowerCase()
+    let best = ''
+    for (const c of candidates) {
+      if (c.toLowerCase().startsWith(lowerCurrent) && c.length > current.length) {
+        if (!best || c.length < best.length) best = c
+      }
+    }
+    if (!best) return null
+
+    return {
+      insertText: best.slice(current.length),
+      range: {
+        startLineNumber: position.lineNumber,
+        startColumn: position.column,
+        endLineNumber: position.lineNumber,
+        endColumn: position.column
+      }
+    }
+  } catch {
+    return null
+  }
 }
 
 function registerEditorShortcuts(editor) {
@@ -2051,6 +2098,7 @@ const editorOptions = computed(() => ({
   },
   acceptSuggestionOnEnter: 'on',
   tabCompletion: 'on',
+  inlineSuggest: { enabled: true },
   folding: true,
   foldingStrategy: 'indentation',
   showFoldingControls: 'always',
@@ -2107,6 +2155,12 @@ async function loadSettings() {
         sidebarWidth.value = settings.panels.sidebar.width ?? 280
       }
     }
+
+    const enabled = settings.ai?.autocomplete?.enabled
+    autocompleteEnabled.value = typeof enabled === 'boolean' ? enabled : true
+    try {
+      await window.monarco?.ai?.autocomplete?.setEnabled?.(autocompleteEnabled.value)
+    } catch {}
   } catch (e) {
     console.error('Failed to load settings:', e)
   }
@@ -2120,6 +2174,7 @@ async function saveSettingsToFile() {
       editor: { ...editorSettings.value },
       appearance: { ...uiSettings.value },
       terminal: { ...terminalSettings.value },
+      ai: { autocomplete: { enabled: autocompleteEnabled.value } },
       panels: {
         aiChat: { open: isAIChatOpen.value, width: aiChatWidth.value },
         terminal: { open: isTerminalOpen.value, height: terminalHeight.value },
@@ -3918,7 +3973,6 @@ onUnmounted(() => {
                 :value="activeTab.previewUrl || previewUrl"
                 @keydown.enter.prevent="(e) => { const url = e.target.value; openPreview(url) }"
               />
-              <button class="mini-preview-btn" @click="openPreview(activeTab.previewUrl || previewUrl)">Ir</button>
               <button
                 class="mini-preview-btn"
                 :class="{ 'mini-preview-btn-active': previewSelectMode }"
@@ -3926,20 +3980,20 @@ onUnmounted(() => {
               >
                 🖱️ Selecionar
               </button>
+              <button class="mini-preview-btn" @click="openPreviewDevTools">Console</button>
               <input
                 class="mini-preview-note"
                 v-model="previewSelectionNote"
                 placeholder="Nota p/ agente (opcional)"
                 :disabled="!previewSelectMode"
               />
-              <button class="mini-preview-btn" :disabled="!hasAnySelection" @click="sendPreviewSelectionToChat">Enviar seleção</button>
-              <button class="mini-preview-btn" :disabled="!hasAnySelection" @click="clearPreviewSelection">Limpar</button>
             </div>
             <div class="mini-preview-frame">
               <webview
                 ref="miniPreviewWebview"
                 class="mini-preview-webview"
                 :src="activeTab.previewUrl || previewUrl"
+                :preload="webviewPreloadPath"
                 allowpopups="false"
               ></webview>
             </div>
