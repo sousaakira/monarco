@@ -7,16 +7,48 @@
       :class="{ active: tab.path === activePath }"
       :title="tab.path"
       @click="$emit('select', tab.path)"
+      @contextmenu.prevent="onTabContextMenu($event, tab)"
     >
       <span v-if="tab.dirty" class="dirty" />
       <span class="file-icon" :style="{ backgroundImage: `url(${getIconPath(tab.name)})` }"></span>
       <span class="label">{{ tab.name }}</span>
       <button class="close" @click.stop="$emit('close', tab.path)">×</button>
     </div>
+
+    <!-- Tab Context Menu -->
+    <div
+      v-if="contextMenu.show"
+      class="tab-context-menu-overlay"
+      @pointerdown="closeContextMenu"
+      @contextmenu.prevent
+    >
+      <div
+        class="tab-context-menu"
+        :style="{ left: contextMenu.x + 'px', top: contextMenu.y + 'px' }"
+        @pointerdown.stop
+      >
+        <button class="tab-context-menu-item" @click="copyFullPath">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"></path>
+            <path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"></path>
+          </svg>
+          Copiar Caminho Completo
+        </button>
+        <button class="tab-context-menu-item" @click="copyRelativePath">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"></path>
+            <path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"></path>
+          </svg>
+          Copiar Caminho Relativo
+        </button>
+      </div>
+    </div>
   </div>
 </template>
 
 <script setup>
+import { ref } from 'vue'
+
 const FILE_ICON_MAP = {
   js: 'file_type_js', cjs: 'file_type_js', mjs: 'file_type_js',
   ts: 'file_type_typescript', tsx: 'file_type_typescript',
@@ -38,7 +70,7 @@ function getIconPath(fileName) {
   return `./icons/${iconName}`
 }
 
-defineProps({
+const props = defineProps({
   tabs: {
     type: Array,
     default: () => []
@@ -46,10 +78,82 @@ defineProps({
   activePath: {
     type: String,
     default: null
+  },
+  workspacePath: {
+    type: String,
+    default: ''
   }
 })
 
-defineEmits(['select', 'close'])
+const emit = defineEmits(['select', 'close'])
+
+// Context Menu State
+const contextMenu = ref({ show: false, x: 0, y: 0, tab: null })
+
+function onTabContextMenu(event, tab) {
+  event.preventDefault()
+  const margin = 8
+  const menuWidth = 220
+  const menuHeight = 80
+  
+  let x = event.clientX
+  let y = event.clientY
+  
+  // Adjust if menu would go off screen
+  if (x + menuWidth > window.innerWidth) {
+    x = window.innerWidth - menuWidth - margin
+  }
+  if (y + menuHeight > window.innerHeight) {
+    y = window.innerHeight - menuHeight - margin
+  }
+  
+  contextMenu.value = {
+    show: true,
+    x: Math.max(margin, x),
+    y: Math.max(margin, y),
+    tab: tab
+  }
+}
+
+function closeContextMenu() {
+  contextMenu.value = { show: false, x: 0, y: 0, tab: null }
+}
+
+async function clipboardWriteText(text) {
+  if (window.monarco?.clipboard?.writeText) {
+    window.monarco.clipboard.writeText(text)
+    return
+  }
+  if (navigator.clipboard?.writeText) {
+    await navigator.clipboard.writeText(text)
+  }
+}
+
+async function copyFullPath() {
+  if (!contextMenu.value.tab) return
+  const path = contextMenu.value.tab.path
+  await clipboardWriteText(path)
+  closeContextMenu()
+  window.monarcoToast?.success?.('Caminho completo copiado!')
+}
+
+async function copyRelativePath() {
+  if (!contextMenu.value.tab) return
+  
+  let relativePath = contextMenu.value.tab.path
+  
+  // Calculate relative path from workspace
+  if (props.workspacePath && contextMenu.value.tab.path.startsWith(props.workspacePath)) {
+    relativePath = contextMenu.value.tab.path.replace(props.workspacePath, '')
+    if (relativePath.startsWith('/') || relativePath.startsWith('\\')) {
+      relativePath = relativePath.substring(1)
+    }
+  }
+  
+  await clipboardWriteText(relativePath)
+  closeContextMenu()
+  window.monarcoToast?.success?.('Caminho relativo copiado!')
+}
 </script>
 
 <style scoped>
@@ -202,6 +306,67 @@ defineEmits(['select', 'close'])
 .tab.active .close:hover {
   background: rgba(255, 77, 77, 0.2);
   color: #ff6b6b;
+  opacity: 1;
+}
+
+/* Tab Context Menu */
+.tab-context-menu-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 90;
+}
+
+.tab-context-menu {
+  position: fixed;
+  background: rgba(30, 30, 30, 0.98);
+  backdrop-filter: blur(12px);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 8px;
+  padding: 6px 0;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.4), 0 2px 8px rgba(0, 0, 0, 0.2);
+  min-width: 220px;
+  animation: contextMenuFadeIn 0.15s ease;
+}
+
+@keyframes contextMenuFadeIn {
+  from {
+    opacity: 0;
+    transform: scale(0.96);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+.tab-context-menu-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 10px 14px;
+  border: none;
+  background: transparent;
+  color: rgba(255, 255, 255, 0.85);
+  font-size: 13px;
+  font-weight: 400;
+  text-align: left;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.tab-context-menu-item:hover {
+  background: rgba(255, 255, 255, 0.08);
+  color: #fff;
+}
+
+.tab-context-menu-item svg {
+  flex-shrink: 0;
+  opacity: 0.6;
+  transition: opacity 0.15s ease;
+}
+
+.tab-context-menu-item:hover svg {
   opacity: 1;
 }
 </style>
