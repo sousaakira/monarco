@@ -4083,6 +4083,7 @@ onUnmounted(() => {
       <EditorTabs
         :tabs="tabs"
         :active-path="activePath"
+        :workspace-path="workspacePath"
         @select="activePath = $event"
         @close="closeTab"
       />
