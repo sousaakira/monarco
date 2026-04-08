@@ -42,31 +42,6 @@
             <button
               class="panel-icon-btn"
               type="button"
-              title="Limpar"
-              @click="clearAiTerminal"
-              :disabled="!aiTerminalReady"
-            >
-              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                <path d="M3 6h18"></path>
-                <path d="M8 6V4h8v2"></path>
-                <path d="M19 6l-1 14H6L5 6"></path>
-              </svg>
-            </button>
-            <button
-              class="panel-icon-btn panel-icon-btn-primary"
-              type="button"
-              title="Novo terminal"
-              @click="createAiTerminalSession"
-              :disabled="!terminalApiAvailable"
-            >
-              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                <path d="M12 5v14"></path>
-                <path d="M5 12h14"></path>
-              </svg>
-            </button>
-            <button
-              class="panel-icon-btn"
-              type="button"
               title="Loja de CLIs"
               @click="openCliStore"
               :disabled="!cliStoreApiAvailable"
@@ -1111,7 +1086,10 @@ async function toggleAiSavedMenu() {
 }
 
 async function runAiTerminalStartupCommand() {
-  const cmd = String(activeAiProfile.value?.startupCommand || '').trim()
+  const profileId = selectedTerminalProfileId.value
+  const profile = terminalProfiles.value.find(p => p?.id === profileId) || null
+  const cmd = String(profile?.startupCommand || '').trim()
+  
   if (!cmd) {
     window.monarcoToast?.warning?.('Perfil sem comando de inicialização')
     return
@@ -1220,7 +1198,10 @@ async function startAiCliInProject(projectPath) {
   if (cwd) selectedAiCwd.value = cwd
   showAiProjectPicker.value = false
 
-  const cmd = String(activeAiProfile.value?.startupCommand || '').trim()
+  const profileId = selectedTerminalProfileId.value
+  const profile = terminalProfiles.value.find(p => p?.id === profileId) || null
+  const cmd = String(profile?.startupCommand || '').trim()
+  
   if (!cmd) {
     window.monarcoToast?.warning?.('Perfil sem comando de inicialização')
     return
@@ -1228,7 +1209,11 @@ async function startAiCliInProject(projectPath) {
 
   isStartingAiCli.value = true
   try {
-    const terminalId = await createAiTerminalSession(cwd ? { cwd, autoFocus: true } : { autoFocus: true })
+    const terminalId = await createAiTerminalSession({ 
+      cwd: cwd || undefined, 
+      profileId,
+      autoFocus: true 
+    })
     if (!terminalId) return
     window.monarco?.terminal?.write?.(terminalId, cmd + '\n')
   } finally {
