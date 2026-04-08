@@ -152,9 +152,16 @@ function deactivateEyedropper() {
 }
 
 function copyToClipboard(text) {
+  try {
+    if (window.monarco?.clipboard?.writeText) {
+      window.monarco.clipboard.writeText(text)
+      console.log('Cor copiada:', text)
+      return
+    }
+  } catch {}
   navigator.clipboard.writeText(text).then(() => {
     console.log('Cor copiada:', text)
-  })
+  }).catch(() => {})
 }
 
 function copyColor(color) {

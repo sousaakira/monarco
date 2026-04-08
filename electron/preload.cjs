@@ -1,4 +1,4 @@
-const { contextBridge, ipcRenderer } = require('electron')
+const { contextBridge, ipcRenderer, clipboard } = require('electron')
 
 contextBridge.exposeInMainWorld('monarco', {
   windowMinimize: () => ipcRenderer.invoke('window:minimize'),
@@ -15,6 +15,15 @@ contextBridge.exposeInMainWorld('monarco', {
   deletePath: (targetPath) => ipcRenderer.invoke('fs:deletePath', targetPath),
   searchFiles: (query, options) => ipcRenderer.invoke('fs:search', query, options),
   searchWorkspace: (query) => ipcRenderer.invoke('workspace:search', query),
+
+  clipboard: {
+    readText: () => clipboard.readText(),
+    writeText: (text) => clipboard.writeText(String(text ?? ''))
+  },
+
+  webview: {
+    getPreloadPath: () => ipcRenderer.invoke('webview:getPreloadPath')
+  },
   
   // Git APIs
   git: {

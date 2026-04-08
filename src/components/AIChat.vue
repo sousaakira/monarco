@@ -582,6 +582,8 @@ const messagesWrapper = ref(null)
 const inputRef = ref()
 const inputFocused = ref(false)
 let typingMessageIndex = -1
+let chatDraftListener = null
+let aiIngestListener = null
 
 // Diff Preview State
 const showDiffPreview = ref(false)
@@ -1048,6 +1050,26 @@ async function aiContextPaste() {
   closeAiTerminalContextMenu()
 }
 
+async function clipboardWriteText(text) {
+  if (window.monarco?.clipboard?.writeText) {
+    window.monarco.clipboard.writeText(text)
+    return
+  }
+  if (navigator.clipboard?.writeText) {
+    await navigator.clipboard.writeText(text)
+  }
+}
+
+async function clipboardReadText() {
+  if (window.monarco?.clipboard?.readText) {
+    return window.monarco.clipboard.readText()
+  }
+  if (navigator.clipboard?.readText) {
+    return await navigator.clipboard.readText()
+  }
+  return ''
+}
+
 async function copyAiTerminalSelection() {
   const xterm = aiXterms.get(activeAiTerminalId.value)
   if (!xterm) return
@@ -1057,7 +1079,7 @@ async function copyAiTerminalSelection() {
     return
   }
   try {
-    await navigator.clipboard.writeText(selection)
+    await clipboardWriteText(selection)
     window.monarcoToast?.success?.('Copiado!')
   } catch (e) {
     window.monarcoToast?.error?.('Falha ao copiar', { description: e?.message })
@@ -1068,7 +1090,7 @@ async function pasteToAiTerminal() {
   const terminalId = activeAiTerminalId.value
   if (!terminalId) return
   try {
-    const text = await navigator.clipboard.readText()
+    const text = await clipboardReadText()
     if (!text) return
     window.monarco?.terminal?.write?.(terminalId, text)
     aiXterms.get(terminalId)?.focus?.()
@@ -1787,7 +1809,7 @@ const parseMessage = (text) => {
             <div class="code-header">
               <span class="code-label">${displayPath}</span>
               <div class="code-actions">
-                <button class="code-action-btn copy-btn" onclick="navigator.clipboard.writeText(window._codeBlocks['${blockId}'].code).then(() => { this.textContent = 'Copied!'; setTimeout(() => this.textContent = 'Copy', 1500) })">
+                <button class="code-action-btn copy-btn" onclick="(window.monarco?.clipboard?.writeText ? (window.monarco.clipboard.writeText(window._codeBlocks['${blockId}'].code), Promise.resolve()) : navigator.clipboard.writeText(window._codeBlocks['${blockId}'].code)).then(() => { this.textContent = 'Copied!'; setTimeout(() => this.textContent = 'Copy', 1500) }).catch(() => {})">
                   Copy
                 </button>
                 <button class="code-action-btn apply-btn" onclick="window.applyCodeBlock('${blockId}')">
@@ -1852,6 +1874,56 @@ onMounted(() => {
   }
   document.addEventListener('click', handleClickOutside)
   document.addEventListener('keydown', handleAiTerminalContextKeydown)
+
+  chatDraftListener = (e) => {
+    const text = typeof e?.detail?.text === 'string' ? e.detail.text : String(e?.detail || '')
+    if (!text.trim()) return
+    if (activeTab.value !== 'chat') activeTab.value = 'chat'
+    nextTick(() => {
+      if (inputRef.value) {
+        inputRef.value.innerText = text
+        inputMessage.value = text
+        inputRef.value.focus?.()
+      } else {
+        inputMessage.value = text
+      }
+      scrollToBottom()
+    })
+  }
+  window.addEventListener('monarco:chat:draft', chatDraftListener)
+
+  aiIngestListener = async (e) => {
+    const text = typeof e?.detail?.text === 'string' ? e.detail.text : String(e?.detail || '')
+    if (!text.trim()) return
+
+    if (activeTab.value === 'terminal') {
+      await nextTick()
+      await ensureAtLeastOneAiTerminal()
+      if (activeAiTerminalId.value) {
+        mountAiTerminal(activeAiTerminalId.value)
+      }
+      await nextTick()
+      const terminalId = activeAiTerminalId.value
+      if (!terminalId) return
+      const oneLine = text.replace(/\s*\n\s*/g, ' ').trim()
+      window.monarco?.terminal?.write?.(terminalId, oneLine)
+      aiXterms.get(terminalId)?.focus?.()
+      return
+    }
+
+    if (activeTab.value !== 'chat') activeTab.value = 'chat'
+    nextTick(() => {
+      if (inputRef.value) {
+        inputRef.value.innerText = text
+        inputMessage.value = text
+        inputRef.value.focus?.()
+      } else {
+        inputMessage.value = text
+      }
+      scrollToBottom()
+    })
+  }
+  window.addEventListener('monarco:ai:ingest', aiIngestListener)
   
   // Apply code handler - agora mostra diff preview primeiro
   window.applyCodeBlock = async (blockId) => {
@@ -2040,6 +2112,14 @@ O código não especifica o arquivo de destino e nenhum arquivo compatível est�
 
 onUnmounted(() => {
   document.removeEventListener('keydown', handleAiTerminalContextKeydown)
+  if (chatDraftListener) {
+    window.removeEventListener('monarco:chat:draft', chatDraftListener)
+    chatDraftListener = null
+  }
+  if (aiIngestListener) {
+    window.removeEventListener('monarco:ai:ingest', aiIngestListener)
+    aiIngestListener = null
+  }
   if (cleanupToolCallListener) {
     cleanupToolCallListener()
     cleanupToolCallListener = null

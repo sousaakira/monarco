@@ -98,6 +98,8 @@ export class AutocompleteService {
     this.pendingRequests = new Map()
     this.lastRequestTime = 0
     this.completionId = 0
+    this.lastErrorLogAt = 0
+    this.lastErrorLogMessage = ''
   }
 
   /**
@@ -242,11 +244,23 @@ export class AutocompleteService {
         return await this.completeFallback(params, abortController)
       }
 
-      const data = await response.json()
-      let insertText = data.choices?.[0]?.text || ''
+      let data = null
+      try {
+        data = await response.json()
+      } catch {
+        // Alguns proxies retornam HTML/Texto com status 200
+        return await this.completeFallback(params, abortController)
+      }
+
+      let insertText = this.extractCompletionText(data)
       
       // Processa o resultado
       insertText = this.postprocessCompletion(insertText, prefixLine, suffixLine)
+
+      // Se veio vazio mesmo com 200, tenta fallback (servidor pode não suportar FIM ou formato /completions)
+      if (!insertText || !String(insertText).trim()) {
+        return await this.completeFallback(params, abortController)
+      }
 
       // Adiciona ao cache
       const cacheKey = this.getCacheKey(prefix)
@@ -264,9 +278,26 @@ export class AutocompleteService {
       if (error.name === 'AbortError') {
         return { insertText: '', aborted: true }
       }
-      console.error('Autocomplete error:', error.message)
+      this.logAutocompleteError(`Autocomplete error: ${error.message}`)
       return { insertText: '', error: error.message }
     }
+  }
+
+  /**
+   * Extrai texto de completion de diferentes formatos (OpenAI compat / proxies)
+   */
+  extractCompletionText(data) {
+    const choice = data?.choices?.[0]
+    if (!choice) return ''
+
+    if (typeof choice.text === 'string') return choice.text
+    if (typeof choice.message?.content === 'string') return choice.message.content
+
+    if (typeof data?.text === 'string') return data.text
+    if (typeof data?.completion === 'string') return data.completion
+    if (typeof choice.output_text === 'string') return choice.output_text
+
+    return ''
   }
 
   /**
@@ -334,9 +365,19 @@ export class AutocompleteService {
       if (error.name === 'AbortError') {
         return { insertText: '', aborted: true }
       }
-      console.error('Autocomplete fallback error:', error.message)
+      this.logAutocompleteError(`Autocomplete fallback error: ${error.message}`)
       return { insertText: '', error: error.message }
     }
+  }
+
+  logAutocompleteError(message) {
+    const now = Date.now()
+    const msg = String(message || '')
+    if (!msg) return
+    if (msg === this.lastErrorLogMessage && now - this.lastErrorLogAt < 4000) return
+    this.lastErrorLogAt = now
+    this.lastErrorLogMessage = msg
+    console.error(msg)
   }
 
   /**

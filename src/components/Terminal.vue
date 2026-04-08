@@ -272,6 +272,26 @@ async function contextPaste() {
   closeTerminalContextMenu()
 }
 
+async function clipboardWriteText(text) {
+  if (window.monarco?.clipboard?.writeText) {
+    window.monarco.clipboard.writeText(text)
+    return
+  }
+  if (navigator.clipboard?.writeText) {
+    await navigator.clipboard.writeText(text)
+  }
+}
+
+async function clipboardReadText() {
+  if (window.monarco?.clipboard?.readText) {
+    return window.monarco.clipboard.readText()
+  }
+  if (navigator.clipboard?.readText) {
+    return await navigator.clipboard.readText()
+  }
+  return ''
+}
+
 async function copySelectionFromXterm(xterm) {
   if (!xterm) return
   const selection = xterm.getSelection?.() || ''
@@ -280,7 +300,7 @@ async function copySelectionFromXterm(xterm) {
     return
   }
   try {
-    await navigator.clipboard.writeText(selection)
+    await clipboardWriteText(selection)
     window.monarcoToast?.success?.('Copiado!')
   } catch (e) {
     window.monarcoToast?.error?.('Falha ao copiar', { description: e?.message })
@@ -290,7 +310,7 @@ async function copySelectionFromXterm(xterm) {
 async function pasteTextToTerminalId(terminalId) {
   if (!terminalId) return
   try {
-    const text = await navigator.clipboard.readText()
+    const text = await clipboardReadText()
     if (!text) return
     window.monarco?.terminal?.write?.(terminalId, text)
   } catch (e) {
