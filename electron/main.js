@@ -760,20 +760,22 @@ async function buildTree(rootPath) {
 
   const children = await Promise.all(
     entries
-      .filter((e) => !e.name.startsWith('.'))
       .map(async (e) => {
         const p = path.join(rootPath, e.name)
+        if (shouldIgnoreWorkspacePath(p)) return null
         if (e.isDirectory()) return buildTree(p)
         return { name: e.name, path: p, kind: 'file' }
       })
   )
 
-  children.sort((a, b) => {
+  const filteredChildren = children.filter(Boolean)
+
+  filteredChildren.sort((a, b) => {
     if (a.kind !== b.kind) return a.kind === 'dir' ? -1 : 1
     return a.name.localeCompare(b.name)
   })
 
-  return { name, path: rootPath, kind: 'dir', children }
+  return { name, path: rootPath, kind: 'dir', children: filteredChildren }
 }
 
 function createWindow() {
@@ -1156,13 +1158,9 @@ app.whenReady().then(async () => {
           
           for (const entry of entries) {
             if (results.length >= maxResults) break
-            
-            // Ignora diretórios ocultos e node_modules
-            if (entry.name.startsWith('.') || entry.name === 'node_modules') {
-              continue
-            }
-            
+
             const fullPath = path.join(dirPath, entry.name)
+            if (shouldIgnoreWorkspacePath(fullPath)) continue
             const relativePath = path.relative(workspacePath, fullPath)
             
             if (entry.isDirectory()) {

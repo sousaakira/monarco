@@ -115,6 +115,19 @@
                 </select>
               </div>
             </div>
+
+            <div class="setting-item">
+              <div class="setting-info">
+                <label class="setting-label">Sticky Scroll</label>
+                <p class="setting-description">Manter visíveis as linhas de contexto durante a rolagem (ex: nomes de funções, classes).</p>
+              </div>
+              <div class="setting-control">
+                <label class="control-toggle">
+                  <input type="checkbox" v-model="localSettings.editor.stickyScroll" />
+                  <span class="toggle-slider"></span>
+                </label>
+              </div>
+            </div>
           </div>
 
           <!-- AI Settings -->
@@ -197,9 +210,9 @@
               </div>
               <div class="setting-control">
                 <select v-model="localSettings.appearance.theme" class="control-select">
-                  <option value="dark">Escuro</option>
-                  <option value="light">Claro</option>
-                  <option value="system">Sistema</option>
+                  <option v-for="t in (props.themes.length ? props.themes : [{ id: 'dark', label: 'Escuro' }])" :key="t.id" :value="t.id">
+                    {{ t.label }}
+                  </option>
                 </select>
               </div>
             </div>
@@ -347,7 +360,11 @@
 import { ref, reactive, onMounted } from 'vue'
 
 const props = defineProps({
-  isOpen: Boolean
+  isOpen: Boolean,
+  themes: {
+    type: Array,
+    default: () => []
+  }
 })
 
 const emit = defineEmits(['close', 'save'])
@@ -380,7 +397,8 @@ const defaultSettings = {
     wordWrap: 'off',
     tabSize: 2,
     minimap: true,
-    lineNumbers: 'on'
+    lineNumbers: 'on',
+    stickyScroll: true
   },
   ai: {
     // apiUrl: 'http://192.168.1.18:8000/v1/chat/completions',

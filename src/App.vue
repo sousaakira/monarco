@@ -16,6 +16,7 @@ import EditorTabs from './components/EditorTabs.vue'
 import TerminalPanel from './components/Terminal.vue'
 import Toast from './components/Toast.vue'
 import CommandPalette from './components/CommandPalette.vue'
+import { applyThemeToMonaco, applyThemeToUi, getThemeOptions } from './themeRegistry.js'
 
 // Monaco Editor instance
 const monacoEditorRef = ref(null)
@@ -28,6 +29,50 @@ let autocompleteProviderDisposable = null
 const autocompleteEnabled = ref(false) // Desabilitado por padrão - habilitar apenas com servidor IA local
 const isAutocompleteLoading = ref(false)
 let autocompleteAbortController = null
+
+const availableThemes = ref(getThemeOptions())
+const initialThemeVars = ref({})
+
+function setCssVar(name, value) {
+  document.documentElement.style.setProperty(name, value)
+}
+
+function resetCssVar(name, fallbackValue) {
+  if (fallbackValue === undefined) {
+    document.documentElement.style.removeProperty(name)
+  } else {
+    document.documentElement.style.setProperty(name, fallbackValue)
+  }
+}
+
+function captureInitialThemeVars() {
+  const keys = [
+    '--bg',
+    '--panel',
+    '--panel-2',
+    '--border',
+    '--text',
+    '--muted',
+    '--accent',
+    '--danger',
+    '--tab',
+    '--tab-active',
+    '--mono-bg',
+    '--input-bg',
+    '--hover',
+    '--list-hover',
+    '--list-active'
+  ]
+  const styles = getComputedStyle(document.documentElement)
+  const out = {}
+  for (const k of keys) out[k] = styles.getPropertyValue(k).trim()
+  initialThemeVars.value = out
+}
+
+function applyTheme(themeId) {
+  applyThemeToUi(themeId, { setVar: setCssVar, resetVar: resetCssVar, initialVars: initialThemeVars.value })
+  applyThemeToMonaco(monaco, themeId)
+}
 
 // NOTA: handleEditorMount e funções relacionadas movidas para depois das declarações de variáveis
 // para evitar erro "Cannot access before initialization"
@@ -637,7 +682,11 @@ async function loadNpmScripts() {
   isLoadingScripts.value = true
   try {
     const packageJsonPath = workspacePath.value + '/package.json'
-    const content = await window.monarco.readTextFile(packageJsonPath)
+    const content = await window.monarco.readTextFile(packageJsonPath).catch(() => null)
+    if (!content) {
+      npmScripts.value = []
+      return
+    }
     const packageJson = JSON.parse(content)
     
     if (packageJson.scripts) {
@@ -1542,13 +1591,21 @@ watch(activeTab, (newTab, oldTab) => {
     
     // Cria novo editor
     console.log('[Monaco] Criando editor para', newTab.name, 'linguagem:', newTab.language)
+    
+    // Aplica o tema ANTES de criar o editor para evitar flash do tema padrão
+    applyTheme(uiSettings.value.theme || 'dark')
+    
     monacoInstance = monaco.editor.create(monacoContainer.value, {
       value: newTab.value || '',
       language: newTab.language || 'plaintext',
-      theme: 'vs-dark',
+      theme: 'vs-dark', // Tema padrão do Monaco
       ...editorOptions.value
     })
     
+    // Reaplica o tema após criar o editor para garantir que foi aplicado
+    setTimeout(() => {
+      applyTheme(uiSettings.value.theme || 'dark')
+    }, 50)
     // Registra event handlers
     monacoInstance.onDidChangeModelContent(() => {
       if (suppressMonacoDirty.value) return
@@ -1999,10 +2056,43 @@ const crudDialogTargetKind = ref(null)
 const settingsDialogOpen = ref(false)
 const settingsDraft = ref({ fontSize: 14, wordWrap: 'off', tabSize: 2 })
 const uiSettingsDraft = ref({ windowControlsPosition: 'left' })
-const editorSettings = ref({ fontSize: 14, wordWrap: 'off', tabSize: 2, minimap: true, lineNumbers: 'on' })
+const editorSettings = ref({ fontSize: 14, wordWrap: 'off', tabSize: 2, minimap: true, lineNumbers: 'on', stickyScroll: true })
 const uiSettings = ref({ windowControlsPosition: 'left', theme: 'dark' })
 const terminalSettings = ref({ fontSize: 13, fontFamily: 'monospace', cursorBlink: true, cursorStyle: 'block' })
 const suppressMonacoDirty = ref(false)
+
+watch(
+  () => uiSettings.value.theme,
+  (themeId) => {
+    applyTheme(themeId || 'dark')
+  }
+)
+
+// Observa mudanças nas configurações do editor e aplica em tempo real
+watch(
+  () => editorSettings.value,
+  (newSettings) => {
+    if (!monacoInstance) return
+    
+    monacoInstance.updateOptions({
+      stickyScroll: { enabled: newSettings.stickyScroll !== false },
+      fontSize: newSettings.fontSize,
+      wordWrap: newSettings.wordWrap === 'on' ? 'on' : 'off',
+      tabSize: newSettings.tabSize,
+      minimap: { enabled: newSettings.minimap !== false },
+      lineNumbers: newSettings.lineNumbers || 'on',
+      scrollbar: {
+        verticalScrollbarSize: 6,
+        horizontalScrollbarSize: 6,
+        vertical: 'auto',
+        horizontal: 'auto',
+        useShadows: false,
+        alwaysConsumeMouseWheel: false
+      }
+    })
+  },
+  { deep: true }
+)
 
 const editorOptions = computed(() => ({
   fontSize: editorSettings.value.fontSize,
@@ -2010,6 +2100,15 @@ const editorOptions = computed(() => ({
   tabSize: editorSettings.value.tabSize,
   minimap: { enabled: editorSettings.value.minimap !== false },
   lineNumbers: editorSettings.value.lineNumbers || 'on',
+  stickyScroll: { enabled: editorSettings.value.stickyScroll !== false },
+  scrollbar: {
+    verticalScrollbarSize: 6,
+    horizontalScrollbarSize: 6,
+    vertical: 'auto',
+    horizontal: 'auto',
+    useShadows: false,
+    alwaysConsumeMouseWheel: false
+  },
   // Recursos avançados
   suggestOnTriggerCharacters: true,
   quickSuggestions: {
@@ -2073,7 +2172,8 @@ async function loadSettings() {
         wordWrap: settings.editor.wordWrap ?? 'off',
         tabSize: settings.editor.tabSize ?? 2,
         minimap: settings.editor.minimap !== false,
-        lineNumbers: settings.editor.lineNumbers ?? 'on'
+        lineNumbers: settings.editor.lineNumbers ?? 'on',
+        stickyScroll: settings.editor.stickyScroll !== false
       }
     }
     
@@ -2149,7 +2249,8 @@ async function handleSettingsSave(settings) {
       wordWrap: settings.editor.wordWrap || 'off',
       tabSize: settings.editor.tabSize || 2,
       minimap: settings.editor.minimap !== false,
-      lineNumbers: settings.editor.lineNumbers || 'on'
+      lineNumbers: settings.editor.lineNumbers || 'on',
+      stickyScroll: settings.editor.stickyScroll !== false
     }
   }
   
@@ -2159,6 +2260,7 @@ async function handleSettingsSave(settings) {
       windowControlsPosition: settings.appearance.windowControlsPosition || 'left',
       theme: settings.appearance.theme || 'dark'
     }
+    applyTheme(uiSettings.value.theme || 'dark')
   }
   
   // Aplica configurações de terminal
@@ -2182,7 +2284,8 @@ async function saveSettings() {
     wordWrap: settingsDraft.value.wordWrap === 'on' ? 'on' : 'off',
     tabSize: Math.max(1, Math.min(8, Number(settingsDraft.value.tabSize) || 2)),
     minimap: editorSettings.value.minimap,
-    lineNumbers: editorSettings.value.lineNumbers
+    lineNumbers: editorSettings.value.lineNumbers,
+    stickyScroll: editorSettings.value.stickyScroll !== false
   }
 
   const nextUi = {
@@ -2213,6 +2316,7 @@ function languageForPath(filePath) {
   if (lower.endsWith('.ts') || lower.endsWith('.tsx')) {
     return 'typescript'
   }
+  if (lower.endsWith('.vue')) return 'html'
   if (lower.endsWith('.go')) return 'go'
   if (lower.endsWith('.html')) return 'html'
   if (lower.endsWith('.css')) return 'css'
@@ -3103,8 +3207,10 @@ onMounted(async () => {
   console.log('🚀 [App.vue] onMounted INICIADO - Vue renderizado com sucesso!')
   console.log('================================================\n')
   
+  captureInitialThemeVars()
   refreshIsMaximized()
   await loadSettings()
+  applyTheme(uiSettings.value.theme || 'dark')
   window.addEventListener('keydown', onKeyDown)
   window.addEventListener('keyup', updateCursorOffsetFromDom, true)
   window.addEventListener('mouseup', updateCursorOffsetFromDom, true)
@@ -3318,6 +3424,7 @@ onUnmounted(() => {
     <Settings 
       v-if="settingsDialogOpen" 
       :is-open="settingsDialogOpen"
+      :themes="availableThemes"
       @close="closeSettings"
       @save="handleSettingsSave"
     />
