@@ -1,6 +1,7 @@
 <script setup>
 import { computed, onMounted, onUnmounted, ref, watch, nextTick } from 'vue'
 // import MonacoEditor from 'monaco-editor-vue3' // DESABILITADO - vamos usar direto
+
 import * as monaco from 'monaco-editor'
 import FileTree from './components/FileTree.vue'
 import AIChat from './components/AIChat.vue'

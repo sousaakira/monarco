@@ -73,6 +73,9 @@ let aiAgent = null // Instância global do agente de IA
 // Terminal PTY instances
 const terminals = new Map()
 
+// Mapeia terminalId → webContents que deve receber os eventos (mutável para suportar detach)
+const terminalOwners = new Map()
+
 // Workspace FS watchers (to detect external changes, e.g. terminal AI)
 let workspaceWatchRoots = []
 let workspaceWatchers = new Map()
@@ -902,6 +905,33 @@ app.whenReady().then(async () => {
     return path.join(app.getAppPath(), 'electron', 'webview-preload.cjs')
   })
 
+  ipcMain.handle('terminal:openDetached', async (_evt, { terminalId, name }) => {
+    const preloadPath = path.join(app.getAppPath(), 'electron', 'preload.cjs')
+    const encodedName = encodeURIComponent(name || 'Terminal')
+    const settings = await loadSettings()
+    const controlsPos = settings?.appearance?.windowControlsPosition || 'left'
+
+    const win = new BrowserWindow({
+      width: 800,
+      height: 480,
+      title: name || 'Terminal',
+      backgroundColor: '#1e1e1e',
+      frame: false,
+      webPreferences: {
+        contextIsolation: true,
+        nodeIntegration: false,
+        preload: preloadPath
+      }
+    })
+
+    if (isDev) {
+      win.loadURL(`http://localhost:5175?terminalDetached=${terminalId}&name=${encodedName}&controlsPos=${controlsPos}`)
+    } else {
+      const indexPath = path.join(app.getAppPath(), 'dist', 'index.html')
+      win.loadFile(indexPath, { query: { terminalDetached: terminalId, name: encodedName, controlsPos } })
+    }
+  })
+
   ipcMain.handle('workspace:select', async () => {
     try {
       log('info', 'ipc:workspace:select', 'Iniciando seleção de workspace')
@@ -1591,24 +1621,26 @@ app.whenReady().then(async () => {
       })
       
       terminals.set(terminalId, ptyProcess)
+      terminalOwners.set(terminalId, evt.sender)
       log('info', 'ipc:terminal:create', 'Terminal criado com sucesso', { id: terminalId, pid: ptyProcess.pid })
-      
-      // Enviar dados do terminal para o renderer
+
+      // Enviar dados do terminal para o renderer atual dono do terminal
       ptyProcess.onData((data) => {
-        const win = BrowserWindow.fromWebContents(evt.sender)
-        if (win && !win.isDestroyed()) {
-          evt.sender.send('terminal:data', terminalId, data)
+        const owner = terminalOwners.get(terminalId)
+        if (owner && !owner.isDestroyed()) {
+          owner.send('terminal:data', terminalId, data)
         }
       })
-      
+
       // Quando o terminal fechar
       ptyProcess.onExit(({ exitCode }) => {
         log('info', 'ipc:terminal:create', 'Terminal fechado', { id: terminalId, exitCode })
         terminals.delete(terminalId)
-        const win = BrowserWindow.fromWebContents(evt.sender)
-        if (win && !win.isDestroyed()) {
-          evt.sender.send('terminal:exit', terminalId, exitCode)
+        const owner = terminalOwners.get(terminalId)
+        if (owner && !owner.isDestroyed()) {
+          owner.send('terminal:exit', terminalId, exitCode)
         }
+        terminalOwners.delete(terminalId)
       })
       
       return terminalId
@@ -1641,8 +1673,26 @@ app.whenReady().then(async () => {
       term.kill()
       terminals.delete(terminalId)
     }
+    terminalOwners.delete(terminalId)
   })
-  
+
+  // Transferir propriedade dos eventos de um terminal para o webContents chamador
+  ipcMain.handle('terminal:transfer', (evt, terminalId) => {
+    if (terminals.has(terminalId)) {
+      terminalOwners.set(terminalId, evt.sender)
+    }
+  })
+
+  // Recolocar terminal desanexado de volta na janela principal
+  ipcMain.handle('terminal:reattach', (evt, { terminalId, name }) => {
+    if (mainWindow && !mainWindow.isDestroyed() && terminals.has(terminalId)) {
+      terminalOwners.set(terminalId, mainWindow.webContents)
+      mainWindow.webContents.send('terminal:reattached', { terminalId, name })
+    }
+    const win = BrowserWindow.fromWebContents(evt.sender)
+    if (win && !win.isDestroyed()) win.close()
+  })
+
   // Obter caminho do workspace atual
   ipcMain.handle('terminal:getCwd', () => {
     return currentWorkspacePath || os.homedir()
