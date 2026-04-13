@@ -207,3 +207,23 @@
 .icon-list-check {
   background-image: url('./fonts/solid/list-check.svg');
 }
+
+.icon-wand-magic-sparkles {
+  display: inline-block;
+  width: 12px;
+  height: 12px;
+  background-size: contain;
+  background-repeat: no-repeat;
+  filter: invert(1);
+  background-image: url('./fonts/solid/wand-magic-sparkles.svg');
+}
+
+.icon-swatchbook {
+  display: inline-block;
+  width: 12px;
+  height: 12px;
+  background-size: contain;
+  background-repeat: no-repeat;
+  filter: invert(1);
+  background-image: url('./fonts/solid/swatchbook.svg');
+}

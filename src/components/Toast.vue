@@ -19,6 +19,13 @@
             <div v-if="toast.description" class="toast-description">
               {{ toast.description }}
             </div>
+            <button
+              v-if="toast.action"
+              class="toast-action"
+              @click.stop="() => { toast.action.callback(); removeToast(toast.id) }"
+            >
+              {{ toast.action.label }}
+            </button>
           </div>
           <button class="toast-close" @click.stop="removeToast(toast.id)">
             ×
@@ -42,7 +49,8 @@ function addToast(message, options = {}) {
     message,
     type: options.type || 'info',
     description: options.description || null,
-    duration: options.duration || 3000
+    duration: options.duration || 3000,
+    action: options.action || null
   }
   
   toasts.value.push(toast)
@@ -156,6 +164,23 @@ defineExpose({ addToast, removeToast })
   font-size: 12px;
   color: var(--muted);
   line-height: 1.4;
+}
+
+.toast-action {
+  margin-top: 6px;
+  padding: 3px 10px;
+  background: var(--accent);
+  border: none;
+  border-radius: 4px;
+  color: #fff;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: opacity 0.1s ease;
+}
+
+.toast-action:hover {
+  opacity: 0.85;
 }
 
 .toast-close {

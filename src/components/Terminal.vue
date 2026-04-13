@@ -2,15 +2,15 @@
   <div class="terminal-panel">
     <div class="terminal-header">
       <div class="terminal-tabs">
-        <div 
-          v-for="(term, index) in terminals" 
+        <div
+          v-for="(term, index) in terminals"
           :key="term.id"
           class="terminal-tab"
           :class="{ active: term.id === activeTerminalId }"
           @click="selectTerminal(term.id)"
         >
           <span class="icon-terminal"></span>
-          <span class="terminal-tab-name">Terminal {{ index + 1 }}</span>
+          <span class="terminal-tab-name">{{ term.name || `Terminal ${index + 1}` }}</span>
           <button class="terminal-tab-close" @click.stop="closeTerminal(term.id)">×</button>
         </div>
         <button class="terminal-add-btn" @click="createTerminal" title="Novo Terminal">
@@ -177,6 +177,52 @@ async function createTerminal() {
   } catch (e) {
     console.error('Failed to create terminal:', e)
   }
+}
+
+async function adoptTerminal(terminalId, name) {
+  const term = {
+    id: terminalId,
+    name: name || 'IA',
+    xterm: null,
+    fitAddon: null
+  }
+
+  term.xterm = new Terminal({
+    theme: termTheme,
+    fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace',
+    fontSize: 13,
+    lineHeight: 1.2,
+    cursorBlink: true,
+    cursorStyle: 'block',
+    scrollback: 10000,
+    allowProposedApi: true
+  })
+
+  term.fitAddon = new FitAddon()
+  term.xterm.loadAddon(term.fitAddon)
+  term.xterm.loadAddon(new WebLinksAddon())
+
+  term.xterm.onData((data) => {
+    window.monarco.terminal.write(terminalId, data)
+  })
+
+  term.xterm.attachCustomKeyEventHandler((e) => {
+    if ((e.ctrlKey || e.metaKey) && e.shiftKey && (e.code === 'KeyC' || e.key?.toLowerCase() === 'c')) {
+      void copySelectionFromXterm(term.xterm)
+      return false
+    }
+    if ((e.ctrlKey || e.metaKey) && e.shiftKey && (e.code === 'KeyV' || e.key?.toLowerCase() === 'v')) {
+      void pasteTextToTerminalId(terminalId)
+      return false
+    }
+    return true
+  })
+
+  terminals.value.push(term)
+  activeTerminalId.value = terminalId
+
+  await nextTick()
+  mountTerminal(term)
 }
 
 function mountTerminal(term) {
@@ -416,6 +462,7 @@ function sendCommand(command, { terminalId } = {}) {
 defineExpose({
   fit: fitTerminal,
   createTerminal,
+  adoptTerminal,
   sendCommand
 })
 

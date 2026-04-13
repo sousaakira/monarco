@@ -79,6 +79,14 @@ contextBridge.exposeInMainWorld('monarco', {
     resize: (terminalId, cols, rows) => ipcRenderer.invoke('terminal:resize', terminalId, cols, rows),
     destroy: (terminalId) => ipcRenderer.invoke('terminal:destroy', terminalId),
     getCwd: () => ipcRenderer.invoke('terminal:getCwd'),
+    openDetached: (terminalId, name) => ipcRenderer.invoke('terminal:openDetached', { terminalId, name }),
+    transfer: (terminalId) => ipcRenderer.invoke('terminal:transfer', terminalId),
+    reattach: (terminalId, name) => ipcRenderer.invoke('terminal:reattach', { terminalId, name }),
+    onReattach: (callback) => {
+      const listener = (_event, data) => callback(data)
+      ipcRenderer.on('terminal:reattached', listener)
+      return () => ipcRenderer.removeListener('terminal:reattached', listener)
+    },
     onData: (callback) => {
       const listener = (_event, terminalId, data) => callback(terminalId, data)
       ipcRenderer.on('terminal:data', listener)

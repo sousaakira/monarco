@@ -1,84 +1,191 @@
 <template>
   <div class="statusbar">
+    <!-- Branch Picker Popover -->
+    <Teleport to="body">
+      <div v-if="branchPickerOpen" class="branch-overlay" @mousedown.self="closeBranchPicker"></div>
+      <div v-if="branchPickerOpen" class="branch-picker" :style="pickerStyle">
+        <div class="branch-picker-header">
+          <span class="sb-icon icon-code-branch"></span>
+          <span>Checkout de Branch</span>
+        </div>
+        <div class="branch-picker-search-wrap">
+          <input
+            ref="branchSearchRef"
+            v-model="branchSearch"
+            class="branch-picker-search"
+            placeholder="Filtrar ou digitar novo nome..."
+            @keydown.enter="handleBranchEnter"
+            @keydown.escape="closeBranchPicker"
+          />
+        </div>
+        <div class="branch-picker-list">
+          <template v-if="filteredBranches.length > 0">
+            <div
+              v-for="b in filteredBranches"
+              :key="b.name"
+              class="branch-picker-item"
+              :class="{ active: b.current }"
+              @click="selectBranch(b)"
+            >
+              <span class="sb-icon icon-code-branch branch-item-icon"></span>
+              <span class="branch-item-name">{{ b.name }}</span>
+              <span v-if="b.current" class="branch-item-badge">atual</span>
+            </div>
+          </template>
+          <div v-else-if="branchSearch" class="branch-picker-create" @click="createBranch">
+            <span class="sb-icon icon-plus branch-item-icon"></span>
+            <span>Criar branch <strong>{{ branchSearch }}</strong></span>
+          </div>
+          <div v-else class="branch-picker-empty">Nenhuma branch encontrada</div>
+        </div>
+        <div class="branch-picker-footer">
+          <button class="branch-picker-new-btn" @click="focusSearch">
+            <span class="sb-icon icon-plus"></span> Criar nova branch
+          </button>
+        </div>
+      </div>
+    </Teleport>
+
+    <!-- Esquerda -->
     <div class="status-left">
-      <span v-if="fileName">{{ fileName }}</span>
-      <span v-else>Nenhum arquivo</span>
-      
-      <!-- Cor capturada -->
-      <div 
-        v-if="pickedColor" 
-        class="picked-color-display" 
-        @click="$emit('copyColor', pickedColor)" 
-        :title="'Clique para copiar: ' + pickedColor"
+      <button
+        v-if="isGitRepo"
+        ref="branchBtnRef"
+        class="sb-item branch-btn"
+        :title="`${workspaceName} (Git) — ${branch || '...'}`"
+        @click="toggleBranchPicker"
       >
-        <div class="picked-color-swatch" :style="{ backgroundColor: pickedColor }"></div>
+        <span class="sb-icon icon-code-branch"></span>
+        <span class="branch-text">
+          {{ workspaceName ? workspaceName + ' ' : '' }}{{ branch || '...' }}<template v-if="gitChanges > 0">*</template>
+        </span>
+      </button>
+
+      <span v-if="fileName" class="sb-text sep-left">{{ fileName }}</span>
+
+      <div
+        v-if="pickedColor"
+        class="sb-item sep-left"
+        @click="$emit('copyColor', pickedColor)"
+        :title="'Copiar: ' + pickedColor"
+        style="cursor:pointer"
+      >
+        <span class="color-swatch" :style="{ background: pickedColor }"></span>
         <span>{{ pickedColor }}</span>
-        <button class="picked-color-close" @click.stop="$emit('clearPickedColor')">×</button>
+        <button class="color-close" @click.stop="$emit('clearPickedColor')">×</button>
       </div>
     </div>
-    
+
+    <!-- Direita -->
     <div class="status-right">
-      <!-- Indicador de Autocomplete IA -->
-      <button 
-        class="statusbar-btn" 
-        :class="{ 'autocomplete-active': autocompleteEnabled, 'autocomplete-loading': autocompleteLoading }"
-        @click="$emit('toggleAutocomplete')" 
-        :title="autocompleteEnabled ? 'AI Autocomplete: Ativo (clique para desativar)' : 'AI Autocomplete: Desativado (clique para ativar)'"
+      <button
+        class="sb-item"
+        :class="{ 'ac-active': autocompleteEnabled, 'ac-loading': autocompleteLoading }"
+        @click="$emit('toggleAutocomplete')"
+        :title="autocompleteEnabled ? 'AI Autocomplete ativo' : 'AI Autocomplete desativado'"
       >
-        <span v-if="autocompleteLoading" class="spinner-icon"></span>
-        <span v-else class="icon-wand-magic-sparkles"></span>
+        <span v-if="autocompleteLoading" class="spinner"></span>
+        <span v-else class="sb-icon icon-wand-magic-sparkles"></span>
         <span>{{ autocompleteEnabled ? 'AI' : 'AI Off' }}</span>
       </button>
-      
-      <button 
-        class="statusbar-btn" 
-        @click="$emit('activateEyedropper')" 
-        title="Capturar cor (clique e depois clique em qualquer lugar)"
-      >
-        <span class="icon-palette"></span> Capturar Cor
+
+      <button class="sb-item" @click="$emit('activateEyedropper')" title="Capturar cor">
+        <span class="sb-icon icon-palette"></span>
+        <span>Cor</span>
       </button>
-      <button 
-        class="statusbar-btn" 
-        @click="$emit('toggleColorPalette')" 
-        title="Histórico de cores"
-      >
-        Histórico
+
+      <button class="sb-item" @click="$emit('toggleColorPalette')" title="Histórico de cores">
+        <span class="sb-icon icon-swatchbook"></span>
       </button>
-      <span v-if="language">{{ language }}</span>
-      <span v-if="lineCol">Ln {{ lineCol.line }}, Col {{ lineCol.col }}</span>
+
+      <span v-if="language" class="sb-text">{{ language }}</span>
+      <span v-if="lineCol" class="sb-text">Ln {{ lineCol.line }}, Col {{ lineCol.col }}</span>
     </div>
   </div>
 </template>
 
 <script setup>
-defineProps({
-  fileName: {
-    type: String,
-    default: ''
-  },
-  language: {
-    type: String,
-    default: ''
-  },
-  lineCol: {
-    type: Object,
-    default: () => ({ line: 1, col: 1 })
-  },
-  pickedColor: {
-    type: String,
-    default: null
-  },
-  autocompleteEnabled: {
-    type: Boolean,
-    default: true
-  },
-  autocompleteLoading: {
-    type: Boolean,
-    default: false
-  }
+import { ref, computed, nextTick } from 'vue'
+
+const props = defineProps({
+  fileName:            { type: String,  default: '' },
+  language:            { type: String,  default: '' },
+  lineCol:             { type: Object,  default: () => ({ line: 1, col: 1 }) },
+  pickedColor:         { type: String,  default: null },
+  autocompleteEnabled: { type: Boolean, default: true },
+  autocompleteLoading: { type: Boolean, default: false },
+  branch:              { type: String,  default: '' },
+  branches:            { type: Array,   default: () => [] },
+  isGitRepo:           { type: Boolean, default: false },
+  gitChanges:          { type: Number,  default: 0 },
+  workspaceName:       { type: String,  default: '' },
 })
 
-defineEmits(['activateEyedropper', 'toggleColorPalette', 'copyColor', 'clearPickedColor', 'toggleAutocomplete'])
+const emit = defineEmits([
+  'activateEyedropper', 'toggleColorPalette', 'copyColor',
+  'clearPickedColor', 'toggleAutocomplete',
+  'checkoutBranch', 'createBranch', 'requestBranches',
+])
+
+const branchPickerOpen = ref(false)
+const branchSearch     = ref('')
+const branchBtnRef     = ref(null)
+const branchSearchRef  = ref(null)
+const pickerStyle      = ref({})
+
+const filteredBranches = computed(() => {
+  const q = branchSearch.value.trim().toLowerCase()
+  return q ? props.branches.filter(b => b.name.toLowerCase().includes(q)) : props.branches
+})
+
+function toggleBranchPicker() {
+  if (branchPickerOpen.value) { closeBranchPicker(); return }
+  branchPickerOpen.value = true
+  branchSearch.value = ''
+  emit('requestBranches')
+  nextTick(() => { positionPicker(); branchSearchRef.value?.focus() })
+}
+
+function closeBranchPicker() {
+  branchPickerOpen.value = false
+  branchSearch.value = ''
+}
+
+function positionPicker() {
+  const btn = branchBtnRef.value
+  if (!btn) return
+  const rect = btn.getBoundingClientRect()
+  pickerStyle.value = {
+    left:   rect.left + 'px',
+    bottom: (window.innerHeight - rect.top + 6) + 'px',
+  }
+}
+
+function selectBranch(b) {
+  if (b.current) { closeBranchPicker(); return }
+  emit('checkoutBranch', b.name)
+  closeBranchPicker()
+}
+
+function createBranch() {
+  const name = branchSearch.value.trim()
+  if (!name) return
+  emit('createBranch', name)
+  closeBranchPicker()
+}
+
+function focusSearch() {
+  branchSearch.value = ''
+  branchSearchRef.value?.focus()
+}
+
+function handleBranchEnter() {
+  const q = branchSearch.value.trim()
+  if (!q) return
+  const exact = props.branches.find(b => b.name === q)
+  if (exact) selectBranch(exact)
+  else createBranch()
+}
 </script>
 
 <style scoped>
@@ -86,103 +193,285 @@ defineEmits(['activateEyedropper', 'toggleColorPalette', 'copyColor', 'clearPick
   display: flex;
   align-items: center;
   justify-content: space-between;
-  height: 24px;
-  padding: 0 10px;
+  height: 22px;
   background: var(--statusbar-bg, var(--monaco-statusbar-bg, #007acc));
   color: var(--statusbar-fg, var(--monaco-statusbar-fg, #fff));
   font-size: 12px;
   flex-shrink: 0;
+  user-select: none;
 }
 
-.status-left, .status-right {
+.status-left,
+.status-right {
   display: flex;
   align-items: center;
-  gap: 12px;
+  height: 100%;
+  gap: 0;
 }
 
-.statusbar-btn {
+/* Ícone base da status bar — sobrescreve o tamanho da activity bar */
+.sb-icon {
+  width: 13px !important;
+  height: 13px !important;
+  flex-shrink: 0;
+}
+
+/* Item clicável */
+.sb-item {
   display: flex;
   align-items: center;
-  gap: 4px;
-  padding: 2px 8px;
+  gap: 5px;
+  padding: 0 10px;
+  height: 100%;
   border: none;
-  background: rgba(255, 255, 255, 0.1);
+  background: transparent;
   color: inherit;
   font-size: 11px;
-  border-radius: 4px;
+  font-family: inherit;
   cursor: pointer;
-  transition: background 0.15s ease;
+  white-space: nowrap;
+  transition: background 0.1s;
 }
 
-.statusbar-btn:hover {
-  background: rgba(255, 255, 255, 0.2);
+.sb-item:hover {
+  background: rgba(255,255,255,0.13);
 }
 
-.picked-color-display {
+/* Texto simples sem hover */
+.sb-text {
+  padding: 0 10px;
+  font-size: 11px;
+  opacity: 0.85;
   display: flex;
   align-items: center;
-  gap: 6px;
-  padding: 2px 8px;
-  background: rgba(255, 255, 255, 0.1);
-  border-radius: 4px;
-  cursor: pointer;
-  transition: background 0.15s ease;
+  height: 100%;
+  border-left: 1px solid rgba(255,255,255,0.1);
 }
 
-.picked-color-display:hover {
-  background: rgba(255, 255, 255, 0.2);
+.sep-left {
+  border-left: 1px solid rgba(255,255,255,0.1);
 }
 
-.picked-color-swatch {
+/* Branch button */
+.branch-btn { padding: 0 10px 0 8px; }
+
+.branch-text {
+  font-size: 12px;
+  font-weight: 500;
+  letter-spacing: 0.01em;
+}
+
+/* Cor */
+.color-swatch {
+  width: 11px;
+  height: 11px;
+  border-radius: 2px;
+  border: 1px solid rgba(255,255,255,0.25);
+  flex-shrink: 0;
+}
+
+.color-close {
   width: 14px;
   height: 14px;
-  border-radius: 3px;
-  border: 1px solid rgba(255, 255, 255, 0.3);
-}
-
-.picked-color-close {
-  width: 16px;
-  height: 16px;
   padding: 0;
   border: none;
-  background: rgba(255, 255, 255, 0.2);
+  background: rgba(255,255,255,0.18);
   color: inherit;
-  font-size: 12px;
-  line-height: 1;
+  font-size: 11px;
   border-radius: 50%;
   cursor: pointer;
   display: flex;
   align-items: center;
   justify-content: center;
+  line-height: 1;
 }
 
-.picked-color-close:hover {
-  background: rgba(255, 255, 255, 0.35);
-}
+.color-close:hover { background: rgba(255,255,255,0.32); }
 
-/* Autocomplete button states */
-.autocomplete-active {
-  background: rgba(100, 255, 150, 0.2) !important;
-}
+/* Autocomplete */
+.ac-active { background: rgba(80,220,130,0.18) !important; }
+.ac-active:hover { background: rgba(80,220,130,0.28) !important; }
+.ac-loading { background: rgba(255,200,80,0.18) !important; }
 
-.autocomplete-active:hover {
-  background: rgba(100, 255, 150, 0.3) !important;
-}
-
-.autocomplete-loading {
-  background: rgba(255, 200, 100, 0.2) !important;
-}
-
-.spinner-icon {
-  width: 12px;
-  height: 12px;
-  border: 2px solid rgba(255, 255, 255, 0.3);
+.spinner {
+  width: 11px;
+  height: 11px;
+  border: 1.5px solid rgba(255,255,255,0.3);
   border-top-color: #fff;
   border-radius: 50%;
   animation: spin 0.8s linear infinite;
+  flex-shrink: 0;
 }
 
-@keyframes spin {
-  to { transform: rotate(360deg); }
+@keyframes spin { to { transform: rotate(360deg); } }
+</style>
+
+<style>
+/* Branch Picker — global (Teleport) */
+.branch-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 9998;
+}
+
+.branch-picker {
+  position: fixed;
+  z-index: 9999;
+  width: 300px;
+  background: var(--panel, #252526);
+  border: 1px solid var(--border, #454545);
+  border-radius: 4px;
+  box-shadow: 0 6px 20px rgba(0,0,0,0.5);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  font-size: 12px;
+  color: var(--text, #ccc);
+}
+
+.branch-picker-header {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 7px 12px;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--muted, #888);
+  border-bottom: 1px solid var(--border, #3c3c3c);
+  text-transform: uppercase;
+  letter-spacing: 0.07em;
+}
+
+.branch-picker-header .sb-icon {
+  width: 13px !important;
+  height: 13px !important;
+  opacity: 0.6;
+  filter: invert(0.6) !important;
+}
+
+.branch-picker-search-wrap {
+  padding: 7px 8px;
+  border-bottom: 1px solid var(--border, #3c3c3c);
+}
+
+.branch-picker-search {
+  width: 100%;
+  background: var(--input-bg, #3c3c3c);
+  border: 1px solid var(--border, #555);
+  border-radius: 3px;
+  color: var(--text, #ccc);
+  font-size: 12px;
+  padding: 5px 8px;
+  outline: none;
+  box-sizing: border-box;
+}
+
+.branch-picker-search:focus {
+  border-color: var(--accent, #007acc);
+}
+
+.branch-picker-list {
+  max-height: 220px;
+  overflow-y: auto;
+  padding: 3px 0;
+}
+
+.branch-picker-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 12px;
+  cursor: pointer;
+  transition: background 0.08s;
+}
+
+.branch-picker-item:hover { background: var(--list-hover, rgba(255,255,255,0.07)); }
+.branch-picker-item.active { background: rgba(0,122,204,0.14); }
+
+.branch-item-icon {
+  width: 13px !important;
+  height: 13px !important;
+  flex-shrink: 0;
+  opacity: 0.55;
+  filter: invert(0.55) !important;
+}
+
+.branch-picker-item.active .branch-item-icon {
+  opacity: 1;
+  filter: invert(0.4) sepia(1) saturate(4) hue-rotate(180deg) !important;
+}
+
+.branch-item-name {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12px;
+}
+
+.branch-picker-item.active .branch-item-name {
+  color: var(--accent, #007acc);
+  font-weight: 500;
+}
+
+.branch-item-badge {
+  font-size: 10px;
+  padding: 1px 6px;
+  border-radius: 10px;
+  background: var(--accent, #007acc);
+  color: #fff;
+  flex-shrink: 0;
+}
+
+.branch-picker-create {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  cursor: pointer;
+  color: var(--accent, #007acc);
+  font-size: 12px;
+  transition: background 0.08s;
+}
+
+.branch-picker-create:hover { background: var(--list-hover, rgba(255,255,255,0.06)); }
+
+.branch-picker-empty {
+  padding: 16px 12px;
+  text-align: center;
+  color: var(--muted, #888);
+  font-size: 11px;
+}
+
+.branch-picker-footer {
+  border-top: 1px solid var(--border, #3c3c3c);
+  padding: 5px 8px;
+}
+
+.branch-picker-new-btn {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  width: 100%;
+  padding: 5px 8px;
+  background: none;
+  border: 1px dashed var(--border, #555);
+  border-radius: 3px;
+  color: var(--muted, #888);
+  font-size: 11px;
+  cursor: pointer;
+  transition: all 0.12s;
+}
+
+.branch-picker-new-btn:hover {
+  background: var(--list-hover, rgba(255,255,255,0.05));
+  color: var(--text, #ccc);
+  border-color: var(--accent, #007acc);
+}
+
+.branch-picker-new-btn .sb-icon {
+  width: 11px !important;
+  height: 11px !important;
+  filter: invert(0.6) !important;
 }
 </style>

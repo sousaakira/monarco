@@ -12,6 +12,7 @@ import CrudDialog from './components/CrudDialog.vue'
 import ColorPalette from './components/ColorPalette.vue'
 import ContextMenu from './components/ContextMenu.vue'
 import StatusBar from './components/StatusBar.vue'
+import GitPanel from './components/GitPanel.vue'
 import EditorTabs from './components/EditorTabs.vue'
 import TerminalPanel from './components/Terminal.vue'
 import Toast from './components/Toast.vue'
@@ -100,6 +101,7 @@ const maxAIChatWidth = 800
 
 // AI Chat state
 const isAIChatOpen = ref(false)
+const aiChatMounted = ref(false) // lazy mount: monta na primeira abertura e nunca desmonta
 
 // Preview-in-editor (mini browser) state
 const previewUrl = ref('')
@@ -110,6 +112,7 @@ const previewSelectionStart = ref({ x: 0, y: 0 })
 const previewSelectionDragging = ref(false)
 const miniPreviewWebview = ref(null)
 const webviewPreloadPath = ref('')
+const previewLoading = ref(false)
 
 // Active view state
 const activeView = ref('explorer')
@@ -147,6 +150,7 @@ const isResizingTerminal = ref(false)
 const minTerminalHeight = 100
 const maxTerminalHeight = 600
 const terminalRef = ref(null)
+const aiChatRef = ref(null)
 
 // NPM Scripts state
 const npmScripts = ref([])
@@ -680,6 +684,7 @@ function fitTerminal() {
   }
 }
 
+
 // NPM Scripts functions
 async function loadNpmScripts() {
   if (!workspacePath.value) return
@@ -1176,6 +1181,7 @@ function refreshIsMaximized() {
 }
 
 function openAIChat() {
+  aiChatMounted.value = true
   isAIChatOpen.value = true
   saveSettingsToFile()
 }
@@ -1186,6 +1192,9 @@ function closeAIChat() {
 }
 
 function toggleAIChat() {
+  if (!isAIChatOpen.value) {
+    aiChatMounted.value = true
+  }
   isAIChatOpen.value = !isAIChatOpen.value
   saveSettingsToFile()
 }
@@ -1194,6 +1203,18 @@ function openPreview(url) {
   const nextUrl = normalizeUrlForPreview(url || previewUrl.value || 'http://localhost:5173/')
   previewUrl.value = nextUrl
   openPreviewTab(nextUrl)
+}
+
+function handleDetectedUrl(url) {
+  const normalized = normalizeUrlForPreview(url)
+  if (!normalized) return
+  window.monarcoToast?.info?.(`Servidor detectado: ${normalized}`, {
+    duration: 10000,
+    action: {
+      label: 'Abrir Preview',
+      callback: () => openPreview(normalized)
+    }
+  })
 }
 
 function normalizeUrlForPreview(u) {
@@ -1361,6 +1382,14 @@ watch(previewSelectMode, (enabled) => {
 onMounted(() => {
   attachWebview()
   loadWebviewPreloadPath()
+
+  // Recoloca terminais desanexados de volta no painel de IA
+  window.monarco?.terminal?.onReattach?.(async ({ terminalId, name }) => {
+    aiChatMounted.value = true
+    isAIChatOpen.value = true
+    await nextTick()
+    aiChatRef.value?.adoptAiTerminalSession(terminalId, name)
+  })
 })
 
 async function loadWebviewPreloadPath() {
@@ -1377,12 +1406,34 @@ function attachWebview() {
   el.removeEventListener?.('dom-ready', handleWebviewDomReady)
   el.removeEventListener?.('console-message', handleWebviewConsoleMessage)
   el.removeEventListener?.('ipc-message', handleWebviewIpcMessage)
+  el.removeEventListener?.('did-start-loading', handleWebviewStartLoading)
+  el.removeEventListener?.('did-stop-loading', handleWebviewStopLoading)
   el.addEventListener('dom-ready', handleWebviewDomReady)
   el.addEventListener('console-message', handleWebviewConsoleMessage)
   el.addEventListener('ipc-message', handleWebviewIpcMessage)
-  if (previewSelectMode.value) {
-    // aguardará dom-ready para injetar
-  }
+  el.addEventListener('did-start-loading', handleWebviewStartLoading)
+  el.addEventListener('did-stop-loading', handleWebviewStopLoading)
+}
+
+function handleWebviewStartLoading() {
+  previewLoading.value = true
+}
+
+function handleWebviewStopLoading() {
+  previewLoading.value = false
+}
+
+function reloadPreview() {
+  const el = miniPreviewWebview.value
+  if (!el) return
+  try { el.reload() } catch {}
+}
+
+function stopPreview() {
+  const el = miniPreviewWebview.value
+  if (!el) return
+  try { el.stop() } catch {}
+  previewLoading.value = false
 }
 
 function handleWebviewDomReady() {
@@ -1552,6 +1603,7 @@ watch(workspacePath, (newPath) => {
     // Limpa o expandedMap quando trocar de workspace
     expandedMap.value = {}
     loadNpmScripts()
+    loadGitStatus()
   }
 })
 
@@ -1633,6 +1685,11 @@ watch(activeTab, (newTab, oldTab) => {
 function handleEditorMount(editor) {
   monacoInstance = editor
   console.log('[Monaco] Editor montado!', editor)
+
+  // Atualiza Ln/Col na status bar
+  editor.onDidChangeCursorPosition((e) => {
+    statusLineCol.value = { line: e.position.lineNumber, col: e.position.column }
+  })
   console.log('[Monaco] Linguagem do modelo:', editor.getModel()?.getLanguageId())
   
   // Registra atalhos personalizados
@@ -2079,15 +2136,285 @@ function registerEditorShortcuts(editor) {
       KeyMod.CtrlCmd | KeyCode.KeyL
     ],
     run: () => {
-      // Dispara evento para toggle do chat
       window.dispatchEvent(new CustomEvent('monarco:toggle-ai-chat'))
     }
+  })
+
+  // F12 - Go to Definition
+  editor.addAction({
+    id: 'go-to-definition',
+    label: 'Go to Definition (F12)',
+    keybindings: [KeyCode.F12],
+    run: (ed) => goToDefinitionAtCursor(ed)
+  })
+
+  // Ctrl+Click - Go to Definition via mouse
+  editor.onMouseDown((e) => {
+    if ((e.event.ctrlKey || e.event.metaKey) && e.target?.position) {
+      goToDefinitionAtCursor(editor, e.target.position)
+    }
+  })
+
+  // Cursor pointer quando Ctrl está pressionado sobre uma palavra
+  const editorDomNode = editor.getDomNode()
+  let ctrlHeld = false
+
+  const onKeyDown = (e) => {
+    if (e.key === 'Control' || e.key === 'Meta') {
+      ctrlHeld = true
+    }
+  }
+  const onKeyUp = (e) => {
+    if (e.key === 'Control' || e.key === 'Meta') {
+      ctrlHeld = false
+      editorDomNode?.classList.remove('goto-hover')
+    }
+  }
+  window.addEventListener('keydown', onKeyDown)
+  window.addEventListener('keyup', onKeyUp)
+
+  editor.onMouseMove((e) => {
+    if (!ctrlHeld || !editorDomNode) return
+    const word = e.target?.position
+      ? editor.getModel()?.getWordAtPosition(e.target.position)
+      : null
+    if (word) {
+      editorDomNode.classList.add('goto-hover')
+    } else {
+      editorDomNode.classList.remove('goto-hover')
+    }
+  })
+
+  editor.onDidDispose(() => {
+    window.removeEventListener('keydown', onKeyDown)
+    window.removeEventListener('keyup', onKeyUp)
+    editorDomNode?.classList.remove('goto-hover')
   })
 }
 
 // ============================================================================
 // FIM DAS FUNÇÕES DO MONACO EDITOR
 // ============================================================================
+
+// ============================================================================
+// GO TO DEFINITION
+// ============================================================================
+
+async function goToDefinitionAtCursor(editor, position = null) {
+  const pos = position || editor.getPosition()
+  if (!pos) return
+
+  const model = editor.getModel()
+  if (!model) return
+
+  const word = model.getWordAtPosition(pos)
+  if (!word) return
+  const symbol = word.word
+
+  const fileContent = model.getValue()
+  const currentFilePath = activeTab.value?.path
+  if (!currentFilePath) return
+
+  // 1. Tenta resolver a partir dos imports do arquivo atual
+  const importDef = await resolveFromImports(fileContent, symbol, currentFilePath)
+  if (importDef) {
+    await openFile(importDef.filePath)
+    await nextTick()
+    const line = importDef.line || 1
+    monacoInstance?.revealLineInCenter(line)
+    monacoInstance?.setPosition({ lineNumber: line, column: importDef.column || 1 })
+    monacoInstance?.focus()
+    return
+  }
+
+  // 2. Tenta encontrar definição no arquivo atual (evita saltar para a própria linha)
+  const localDef = findDefinitionInContent(fileContent, symbol, pos.lineNumber)
+  if (localDef) {
+    monacoInstance?.revealLineInCenter(localDef.line)
+    monacoInstance?.setPosition({ lineNumber: localDef.line, column: localDef.column || 1 })
+    monacoInstance?.focus()
+    return
+  }
+
+  // 3. Busca no workspace
+  const workspaceDef = await searchWorkspaceForDefinition(symbol, currentFilePath)
+  if (workspaceDef) {
+    await openFile(workspaceDef.filePath)
+    await nextTick()
+    monacoInstance?.revealLineInCenter(workspaceDef.line)
+    monacoInstance?.setPosition({ lineNumber: workspaceDef.line, column: workspaceDef.column || 1 })
+    monacoInstance?.focus()
+    return
+  }
+
+}
+
+
+async function resolveFromImports(fileContent, symbol, currentFilePath) {
+  const lines = fileContent.split('\n')
+  const dir = currentFilePath.substring(0, currentFilePath.lastIndexOf('/'))
+
+  for (const line of lines) {
+    const trimmed = line.trim()
+    if (!trimmed.startsWith('import')) continue
+
+    // Extrai o caminho do módulo
+    const fromMatch = trimmed.match(/from\s+['"]([^'"]+)['"]/)
+    if (!fromMatch) continue
+    const modulePath = fromMatch[1]
+
+    // Verifica se o símbolo está nesta linha de import
+    const symbolInImport =
+      // import Symbol from '...'
+      new RegExp(`^import\\s+${symbol}[\\s,{]`).test(trimmed) ||
+      // import { Symbol } ou import { A, Symbol, B }
+      new RegExp(`[{,]\\s*${symbol}\\s*[},]`).test(trimmed) ||
+      // import * as Symbol from '...'
+      new RegExp(`\\*\\s+as\\s+${symbol}`).test(trimmed) ||
+      // import { Original as Symbol }
+      new RegExp(`as\\s+${symbol}\\b`).test(trimmed)
+
+    if (!symbolInImport) continue
+
+    // Ignora módulos node (sem ./ ou ../)
+    if (!modulePath.startsWith('.') && !modulePath.startsWith('/')) continue
+
+    const resolved = await resolveModulePath(modulePath, dir)
+    if (resolved) {
+      // Busca a linha exata da declaração no arquivo resolvido
+      try {
+        const content = await window.monarco?.readTextFile(resolved)
+        if (content) {
+          const def = findDefinitionInContent(content, symbol, -1)
+          if (def) return { filePath: resolved, line: def.line, column: def.column }
+        }
+      } catch {}
+      return { filePath: resolved, line: 1, column: 1 }
+    }
+  }
+
+  return null
+}
+
+async function resolveModulePath(modulePath, fromDir) {
+  const candidates = []
+
+  const base = modulePath.startsWith('/')
+    ? modulePath
+    : fromDir + '/' + modulePath
+
+  // Normaliza o caminho (resolve ../ e ./)
+  const normalize = (p) => {
+    const parts = p.split('/')
+    const out = []
+    for (const part of parts) {
+      if (part === '..') out.pop()
+      else if (part !== '.') out.push(part)
+    }
+    return out.join('/')
+  }
+
+  const normalized = normalize(base)
+
+  // Tenta extensões e index
+  const extensions = ['', '.vue', '.ts', '.js', '.tsx', '.jsx']
+  const indexes = ['/index.vue', '/index.ts', '/index.js', '/index.tsx', '/index.jsx']
+
+  for (const ext of extensions) {
+    candidates.push(normalized + ext)
+  }
+  for (const idx of indexes) {
+    candidates.push(normalized + idx)
+  }
+
+  for (const candidate of candidates) {
+    if (!candidate || candidate === normalized) continue
+    try {
+      await window.monarco.readTextFile(candidate)
+      return candidate // arquivo existe
+    } catch {
+      // continua tentando
+    }
+  }
+
+  // Também tenta sem extensão caso já tenha uma
+  if (normalized.includes('.')) {
+    try {
+      await window.monarco.readTextFile(normalized)
+      return normalized
+    } catch {}
+  }
+
+  return null
+}
+
+function findDefinitionInContent(fileContent, symbol, currentLine) {
+  const lines = fileContent.split('\n')
+  // Padrões de declaração de função, variável, classe, etc.
+  const patterns = [
+    new RegExp(`^\\s*(?:export\\s+)?(?:async\\s+)?function\\s+${symbol}\\s*[(<]`),
+    new RegExp(`^\\s*(?:export\\s+)?(?:const|let|var)\\s+${symbol}\\s*[=:]`),
+    new RegExp(`^\\s*(?:export\\s+)?class\\s+${symbol}\\s*[{<(]`),
+    new RegExp(`^\\s*(?:export\\s+)?(?:type|interface)\\s+${symbol}\\s*[={<]`),
+    new RegExp(`^\\s*${symbol}\\s*[=:]\\s*(?:function|async function|\\()`),
+    new RegExp(`^\\s*(?:export\\s+)?(?:const|let|var)\\s+\\{[^}]*\\b${symbol}\\b`),
+  ]
+
+  for (let i = 0; i < lines.length; i++) {
+    const lineNumber = i + 1
+    if (lineNumber === currentLine) continue // não salta para a própria linha
+    const line = lines[i]
+    for (const pattern of patterns) {
+      if (pattern.test(line)) {
+        const col = line.indexOf(symbol)
+        return { line: lineNumber, column: col > 0 ? col + 1 : 1 }
+      }
+    }
+  }
+
+  return null
+}
+
+async function searchWorkspaceForDefinition(symbol, currentFilePath) {
+  if (!window.monarco?.searchFiles) return null
+  try {
+    const results = await window.monarco.searchFiles(symbol, {
+      searchContent: true,
+      maxResults: 50
+    })
+    if (!Array.isArray(results) || results.length === 0) return null
+
+    // Filtra linhas que parecem declarações do símbolo
+    const declarationPatterns = [
+      new RegExp(`(?:export\\s+)?(?:async\\s+)?function\\s+${symbol}\\s*[(<]`),
+      new RegExp(`(?:export\\s+)?(?:const|let|var)\\s+${symbol}\\s*[=:]`),
+      new RegExp(`(?:export\\s+)?class\\s+${symbol}\\s*[{<(]`),
+      new RegExp(`(?:export\\s+)?(?:type|interface)\\s+${symbol}\\s*[={<]`),
+      new RegExp(`${symbol}\\s*[=:]\\s*(?:function|async\\s+function|\\(|class)`),
+    ]
+
+    const declarations = results.filter(r => {
+      if (r.type !== 'match' || !r.text) return false
+      return declarationPatterns.some(p => p.test(r.text))
+    })
+
+    // Prefere arquivos diferentes do atual, e arquivos-fonte (não .d.ts, não node_modules)
+    const candidates = (declarations.length > 0 ? declarations : results.filter(r => r.type === 'match'))
+      .filter(r => r.fullPath && !r.fullPath.includes('node_modules') && !r.fullPath.endsWith('.d.ts'))
+      .sort((a, b) => {
+        if (a.fullPath === currentFilePath) return 1
+        if (b.fullPath === currentFilePath) return -1
+        return 0
+      })
+
+    const best = candidates[0]
+    if (!best?.fullPath) return null
+
+    return { filePath: best.fullPath, line: best.line || 1, column: 1 }
+  } catch {
+    return null
+  }
+}
 
 
 const hasDirtyTabs = computed(() => tabs.value.some((t) => t.dirty))
@@ -2249,6 +2576,7 @@ async function loadSettings() {
     if (settings.panels) {
       if (settings.panels.aiChat) {
         isAIChatOpen.value = settings.panels.aiChat.open ?? false
+        if (isAIChatOpen.value) aiChatMounted.value = true
         aiChatWidth.value = settings.panels.aiChat.width ?? 400
       }
       if (settings.panels.terminal) {
@@ -2614,6 +2942,35 @@ async function gitDiscardFile(filePath) {
   }
 }
 
+async function gitStageAll() {
+  try {
+    for (const f of unstagedFiles.value) await window.monarco.git.stage(f.path)
+    await loadGitStatus()
+  } catch (e) {
+    window.monarcoToast?.error('Erro ao adicionar tudo ao stage', { description: e.message })
+  }
+}
+
+async function gitUnstageAll() {
+  try {
+    for (const f of stagedFiles.value) await window.monarco.git.unstage(f.path)
+    await loadGitStatus()
+  } catch (e) {
+    window.monarcoToast?.error('Erro ao remover tudo do stage', { description: e.message })
+  }
+}
+
+async function gitDiscardAll() {
+  if (!confirm(`Descartar TODAS as alterações não staged? Esta ação não pode ser desfeita.`)) return
+  try {
+    for (const f of unstagedFiles.value) await window.monarco.git.discard(f.path)
+    await loadGitStatus()
+    await refreshTree()
+  } catch (e) {
+    window.monarcoToast?.error('Erro ao descartar alterações', { description: e.message })
+  }
+}
+
 async function gitCommit() {
   if (!gitCommitMessage.value.trim()) {
     window.monarcoToast?.warning('Por favor, insira uma mensagem de commit')
@@ -2780,6 +3137,34 @@ function openBranchDialog() {
 function closeBranchDialog() {
   showBranchDialog.value = false
   newBranchName.value = ''
+}
+
+async function gitCheckoutFromStatusBar(branchName) {
+  isLoadingGit.value = true
+  try {
+    await window.monarco.git.checkout(branchName)
+    await Promise.all([loadGitStatus(), loadGitBranches()])
+    await refreshTree()
+    window.monarcoToast?.success(`Branch trocada para "${branchName}"`)
+  } catch (e) {
+    window.monarcoToast?.error('Erro ao trocar de branch', { description: e.message })
+  } finally {
+    isLoadingGit.value = false
+  }
+}
+
+async function gitCreateBranchFromStatusBar(name) {
+  if (!name) return
+  isLoadingGit.value = true
+  try {
+    await window.monarco.git.createBranch(name)
+    await Promise.all([loadGitStatus(), loadGitBranches()])
+    window.monarcoToast?.success(`Branch "${name}" criada com sucesso!`)
+  } catch (e) {
+    window.monarcoToast?.error('Erro ao criar branch', { description: e.message })
+  } finally {
+    isLoadingGit.value = false
+  }
 }
 
 async function loadGitCommits(reset = false) {
@@ -3739,243 +4124,33 @@ onUnmounted(() => {
       </div>
 
       <!-- Source Control View -->
-      <div v-show="activeView === 'git'" class="sidebar-content">
-        <div class="sidebarHeader">
-          <h3 style="margin: 0; font-size: 13px; font-weight: 600;">SOURCE CONTROL</h3>
-          <span v-if="gitBranch" style="font-size: 11px; color: var(--muted); margin-left: 8px;">
-            {{ gitBranch }}
-          </span>
-          <div style="margin-left: auto; display: flex; gap: 4px;">
-            <button 
-              @click="gitPull" 
-              :disabled="isLoadingGit"
-              title="Pull"
-              style="padding: 4px 8px; font-size: 11px;"
-            >
-              ⬇️
-            </button>
-            <button 
-              @click="gitPush" 
-              :disabled="isLoadingGit"
-              title="Push"
-              style="padding: 4px 8px; font-size: 11px;"
-            >
-              ⬆️
-            </button>
-            <button 
-              @click="loadGitStatus" 
-              :disabled="isLoadingGit"
-              title="Refresh Git Status"
-              style="padding: 4px 8px; font-size: 11px;"
-            >
-              <span v-if="isLoadingGit">⟳</span>
-              <span v-else>🔄</span>
-            </button>
-          </div>
-        </div>
-
-        <div v-if="isLoadingGit" class="emptyState" style="padding: 20px; text-align: center;">
-          Loading...
-        </div>
-
-        <div v-else-if="!isGitRepo" class="git-panel">
-          <div class="emptyState" style="padding: 20px; text-align: center;">
-            <p>No git repository found</p>
-            <button @click="gitInitRepo" style="margin-top: 12px;">
-              Initialize Repository
-            </button>
-          </div>
-        </div>
-
-        <div v-else class="git-panel">
-          <!-- Branches Section -->
-          <div class="git-section" style="border-bottom: 1px solid var(--border); padding-bottom: 8px; margin-bottom: 8px;">
-            <div class="git-section-header" style="cursor: pointer; display: flex; align-items: center; justify-content: space-between;" @click="toggleBranchesPanel">
-              <div>
-                <span style="margin-right: 4px;">{{ showBranchesPanel ? '▼' : '▶' }}</span>
-                <span>BRANCHES</span>
-              </div>
-              <button 
-                @click.stop="openBranchDialog"
-                title="Create new branch"
-                style="padding: 2px 6px; font-size: 11px;"
-              >
-                +
-              </button>
-            </div>
-            
-            <div v-if="showBranchesPanel" style="margin-top: 8px;">
-              <div v-if="gitBranches.length === 0" style="padding: 8px; color: var(--muted); font-size: 11px; text-align: center;">
-                Loading branches...
-              </div>
-              <div 
-                v-for="branch in gitBranches" 
-                :key="branch.name"
-                class="git-file-item"
-                :style="{ backgroundColor: branch.current ? 'var(--accent-bg)' : 'transparent' }"
-              >
-                <div class="git-file-info" @click="!branch.current && gitCheckout(branch.name)" :style="{ cursor: branch.current ? 'default' : 'pointer' }">
-                  <span style="margin-right: 4px;">{{ branch.current ? '●' : '○' }}</span>
-                  <span class="git-file-path" :style="{ fontWeight: branch.current ? '600' : '400' }">
-                    {{ branch.name }}
-                  </span>
-                  <span v-if="branch.remote" style="margin-left: 4px; font-size: 9px; color: var(--muted);">
-                    (remote)
-                  </span>
-                </div>
-                <button 
-                  v-if="!branch.current && !branch.remote"
-                  class="git-file-action"
-                  @click="gitDeleteBranch(branch.name)"
-                  title="Delete branch"
-                  style="color: var(--error);"
-                >
-                  ✕
-                </button>
-              </div>
-            </div>
-          </div>
-
-          <!-- Commits History Section -->
-          <div class="git-section" style="border-bottom: 1px solid var(--border); padding-bottom: 8px; margin-bottom: 8px;">
-            <div class="git-section-header" style="cursor: pointer; display: flex; align-items: center; justify-content: space-between;" @click="toggleCommitsPanel">
-              <div>
-                <span style="margin-right: 4px;">{{ showCommitsPanel ? '▼' : '▶' }}</span>
-                <span>COMMITS</span>
-              </div>
-              <button 
-                @click.stop="loadGitCommits(true)"
-                title="Refresh commits"
-                :disabled="isLoadingCommits"
-                style="padding: 2px 6px; font-size: 11px;"
-              >
-                🔄
-              </button>
-            </div>
-            
-            <div v-if="showCommitsPanel" style="margin-top: 8px; max-height: 400px; overflow-y: auto;">
-              <div v-if="isLoadingCommits && gitCommits.length === 0" style="padding: 8px; color: var(--muted); font-size: 11px; text-align: center;">
-                Loading commits...
-              </div>
-              <div v-else-if="gitCommits.length === 0" style="padding: 8px; color: var(--muted); font-size: 11px; text-align: center;">
-                No commits yet
-              </div>
-              <div v-else>
-                <div 
-                  v-for="commit in gitCommits" 
-                  :key="commit.hash"
-                  class="git-commit-item"
-                >
-                  <div class="git-commit-header">
-                    <span class="git-commit-hash" :title="commit.hash">{{ commit.shortHash }}</span>
-                    <span class="git-commit-date">{{ formatCommitDate(commit.date) }}</span>
-                  </div>
-                  <div class="git-commit-subject">{{ commit.subject }}</div>
-                  <div class="git-commit-author">{{ commit.author }}</div>
-                </div>
-                <button 
-                  v-if="gitCommits.length >= 20"
-                  @click="loadGitCommits(false)"
-                  :disabled="isLoadingCommits"
-                  style="width: 100%; padding: 8px; margin-top: 4px; font-size: 11px; background: transparent;"
-                >
-                  {{ isLoadingCommits ? 'Loading...' : 'Load more' }}
-                </button>
-              </div>
-            </div>
-          </div>
-
-          <!-- Commit Section -->
-          <div class="git-commit-section">
-            <textarea 
-              v-model="gitCommitMessage"
-              placeholder="Commit message..."
-              class="git-commit-input"
-              rows="3"
-            ></textarea>
-            <button 
-              @click="gitCommit"
-              class="git-commit-btn"
-              :disabled="!stagedFiles.length || !gitCommitMessage.trim()"
-            >
-              Commit ({{ stagedFiles.length }})
-            </button>
-          </div>
-
-          <!-- Staged Changes -->
-          <div v-if="stagedFiles.length > 0" class="git-section">
-            <div class="git-section-header">STAGED CHANGES ({{ stagedFiles.length }})</div>
-            <div 
-              v-for="file in stagedFiles" 
-              :key="file.path"
-              class="git-file-item"
-            >
-              <div class="git-file-info" @click="showFileDiff(file.path, true)" style="cursor: pointer;" title="View diff">
-                <span :class="'git-status-' + file.status">{{ getGitStatusIcon(file.status) }}</span>
-                <span class="git-file-path">{{ file.path }}</span>
-              </div>
-              <div class="git-file-actions">
-                <button 
-                  class="git-file-action"
-                  @click.stop="openGitFile(file.path)"
-                  title="Open file"
-                >
-                  📄
-                </button>
-                <button 
-                  class="git-file-action"
-                  @click.stop="gitUnstageFile(file.path)"
-                  title="Unstage"
-                >
-                  -
-                </button>
-              </div>
-            </div>
-          </div>
-
-          <!-- Unstaged Changes -->
-          <div v-if="unstagedFiles.length > 0" class="git-section">
-            <div class="git-section-header">CHANGES ({{ unstagedFiles.length }})</div>
-            <div 
-              v-for="file in unstagedFiles" 
-              :key="file.path"
-              class="git-file-item"
-            >
-              <div class="git-file-info" @click="showFileDiff(file.path, false)" style="cursor: pointer;" title="View diff">
-                <span :class="'git-status-' + file.status">{{ getGitStatusIcon(file.status) }}</span>
-                <span class="git-file-path">{{ file.path }}</span>
-              </div>
-              <div class="git-file-actions">
-                <button 
-                  class="git-file-action"
-                  @click.stop="openGitFile(file.path)"
-                  title="Open file"
-                >
-                  📄
-                </button>
-                <button 
-                  class="git-file-action"
-                  @click.stop="gitStageFile(file.path)"
-                  title="Stage"
-                >
-                  +
-                </button>
-                <button 
-                  class="git-file-action"
-                  @click.stop="gitDiscardFile(file.path)"
-                  title="Discard"
-                >
-                  ✕
-                </button>
-              </div>
-            </div>
-          </div>
-
-          <!-- No Changes -->
-          <div v-if="gitStatus.length === 0" class="emptyState" style="padding: 20px; text-align: center;">
-            No changes to commit
-          </div>
-        </div>
+      <div v-show="activeView === 'git'" class="sidebar-content" style="padding:0;overflow:hidden">
+        <GitPanel
+          :is-git-repo="isGitRepo"
+          :loading="isLoadingGit"
+          :loading-commits="isLoadingCommits"
+          :staged-files="stagedFiles"
+          :unstaged-files="unstagedFiles"
+          :commits="gitCommits"
+          :commit-message="gitCommitMessage"
+          :branch="gitBranch"
+          @update:commit-message="gitCommitMessage = $event"
+          @pull="gitPull"
+          @push="gitPush"
+          @refresh="loadGitStatus"
+          @init-repo="gitInitRepo"
+          @commit="gitCommit"
+          @stage="gitStageFile"
+          @unstage="gitUnstageFile"
+          @stage-all="gitStageAll"
+          @unstage-all="gitUnstageAll"
+          @discard="gitDiscardFile"
+          @discard-all="gitDiscardAll"
+          @open-file="openGitFile"
+          @show-diff="showFileDiff"
+          @refresh-commits="loadGitCommits(true)"
+          @load-more-commits="loadGitCommits(false)"
+        />
       </div>
 
       <!-- NPM Scripts View -->
@@ -4092,6 +4267,14 @@ onUnmounted(() => {
         <div class="editorWrap" ref="monacoEditorRef">
           <div v-if="activeTab && activeTab.kind === 'preview'" class="mini-preview-root">
             <div class="mini-preview-toolbar">
+              <button
+                class="mini-preview-nav-btn"
+                :title="previewLoading ? 'Parar' : 'Atualizar'"
+                @click="previewLoading ? stopPreview() : reloadPreview()"
+              >
+                <span v-if="previewLoading" class="icon-xmark"></span>
+                <span v-else class="icon-rotate-right"></span>
+              </button>
               <input
                 class="mini-preview-address"
                 :value="activeTab.previewUrl || previewUrl"
@@ -4139,7 +4322,7 @@ onUnmounted(() => {
           ref="terminalRef"
           :style="{ height: terminalHeight + 'px' }"
           @close="closeTerminal"
-          @detected-url="openPreview"
+          @detected-url="handleDetectedUrl"
         />
       </div>
 
@@ -4151,11 +4334,19 @@ onUnmounted(() => {
         :picked-color="pickedColor"
         :autocomplete-enabled="autocompleteEnabled"
         :autocomplete-loading="isAutocompleteLoading"
+        :branch="gitBranch"
+        :branches="gitBranches"
+        :is-git-repo="isGitRepo"
+        :git-changes="gitStatus.length"
+        :workspace-name="workspacePath ? workspacePath.split('/').pop() : ''"
         @activate-eyedropper="activateEyedropper"
         @toggle-color-palette="toggleColorPalette"
         @copy-color="copyToClipboard"
         @clear-picked-color="clearPickedColor"
         @toggle-autocomplete="toggleAutocomplete"
+        @checkout-branch="gitCheckoutFromStatusBar"
+        @create-branch="gitCreateBranchFromStatusBar"
+        @request-branches="loadGitBranches"
       />
     </main>
 
@@ -4164,7 +4355,9 @@ onUnmounted(() => {
 
     <!-- AI Chat Panel integrado no grid -->
     <AIChat
-      v-if="isAIChatOpen"
+      v-if="aiChatMounted"
+      v-show="isAIChatOpen"
+      ref="aiChatRef"
       :is-open="isAIChatOpen"
       :style="{ width: aiChatWidth + 'px' }"
       class="ai-chat-integrated"

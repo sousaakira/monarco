@@ -257,6 +257,21 @@
             <span class="ai-terminal-tab-meta">{{ s.profileName }}</span>
           </span>
           <span
+            class="ai-terminal-tab-detach"
+            role="button"
+            tabindex="0"
+            title="Desanexar para o painel de terminal"
+            @click.stop="detachAiTerminalSession(s.id)"
+            @keydown.enter.prevent.stop="detachAiTerminalSession(s.id)"
+            @keydown.space.prevent.stop="detachAiTerminalSession(s.id)"
+          >
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <polyline points="15 3 21 3 21 9"></polyline>
+              <path d="M10 14 21 3"></path>
+              <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"></path>
+            </svg>
+          </span>
+          <span
             class="ai-terminal-tab-close"
             role="button"
             tabindex="0"
@@ -1023,6 +1038,7 @@ const aiXterms = new Map()
 const aiFitAddons = new Map()
 const aiOutputBuffers = new Map()
 const aiLastResumeByTerminalId = new Map()
+const aiStartedTerminals = new Set() // terminais onde uma IA já foi iniciada
 let aiMigrateAttempted = false
 
 function openAiTerminalContextMenu(e) {
@@ -1136,7 +1152,7 @@ function stripAnsi(input) {
 
 function extractResumeCommand(text) {
   const clean = stripAnsi(text)
-  const matchResume = clean.match(/\b([\w-]+)\s+--resume\s+([0-9a-fA-F-]{36})\b/)
+  const matchResume = clean.match(/\b(claude(?:-code)?|goose|aider|continue)\s+--resume\s+([0-9a-fA-F-]{36})\b/)
   if (matchResume) {
     const tool = matchResume[1]
     const resumeId = matchResume[2]
@@ -1231,13 +1247,34 @@ async function startAiCliInProject(projectPath) {
 
   isStartingAiCli.value = true
   try {
-    const terminalId = await createAiTerminalSession({ 
-      cwd: cwd || undefined, 
-      profileId,
-      autoFocus: true 
-    })
-    if (!terminalId) return
-    window.monarco?.terminal?.write?.(terminalId, cmd + '\n')
+    const activeId = activeAiTerminalId.value
+
+    // Reutiliza o terminal ativo se nenhuma IA foi iniciada nele ainda
+    if (activeId && !aiStartedTerminals.has(activeId)) {
+      aiStartedTerminals.add(activeId)
+
+      // Atualiza metadados da sessão para refletir o perfil iniciado
+      const session = aiTerminalSessions.value.find(s => s.id === activeId)
+      if (session) {
+        session.name = profile?.name || session.name
+        session.profileId = profileId
+        session.profileName = profile?.name || session.profileName
+      }
+
+      window.monarco?.terminal?.write?.(activeId, cmd + '\n')
+      aiXterms.get(activeId)?.focus?.()
+    } else {
+      // Cria novo terminal pois o ativo já tem uma IA rodando
+      const terminalId = await createAiTerminalSession({
+        cwd: cwd || undefined,
+        profileId,
+        name: profile?.name,
+        autoFocus: true
+      })
+      if (!terminalId) return
+      aiStartedTerminals.add(terminalId)
+      window.monarco?.terminal?.write?.(terminalId, cmd + '\n')
+    }
   } finally {
     isStartingAiCli.value = false
   }
@@ -1450,7 +1487,106 @@ function closeAiTerminalSession(terminalId) {
     })
   }
 
+  aiStartedTerminals.delete(terminalId)
   window.monarco?.terminal?.destroy?.(terminalId)
+}
+
+function detachAiTerminalSession(terminalId) {
+  const session = aiTerminalSessions.value.find(s => s.id === terminalId)
+  if (!session) return
+
+  const xterm = aiXterms.get(terminalId)
+  if (xterm) {
+    try { xterm.dispose() } catch {}
+    aiXterms.delete(terminalId)
+  }
+  aiFitAddons.delete(terminalId)
+  aiOutputBuffers.delete(terminalId)
+  aiLastResumeByTerminalId.delete(terminalId)
+
+  aiTerminalSessions.value = aiTerminalSessions.value.filter(s => s.id !== terminalId)
+
+  if (activeAiTerminalId.value === terminalId) {
+    activeAiTerminalId.value = aiTerminalSessions.value[0]?.id || ''
+    nextTick(() => {
+      if (activeAiTerminalId.value) mountAiTerminal(activeAiTerminalId.value)
+      else if (aiTerminalContainer.value) aiTerminalContainer.value.innerHTML = ''
+    })
+  }
+
+  aiStartedTerminals.delete(terminalId)
+  // PTY continua vivo — abre em janela independente
+  window.monarco?.terminal?.openDetached?.(terminalId, session.name)
+}
+
+async function adoptAiTerminalSession(terminalId, name) {
+  if (!aiTerminalContainer.value) return
+
+  const xterm = new XTerm({
+    theme: {
+      background: '#0f111a',
+      foreground: '#cccccc',
+      cursor: '#aeafad',
+      selectionBackground: '#264f78'
+    },
+    fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace',
+    fontSize: 13,
+    lineHeight: 1.2,
+    cursorBlink: true,
+    cursorStyle: 'block',
+    scrollback: 10000,
+    allowProposedApi: true
+  })
+
+  const fitAddon = new FitAddon()
+  xterm.loadAddon(fitAddon)
+  xterm.loadAddon(new WebLinksAddon())
+
+  xterm.onData((data) => {
+    window.monarco.terminal.write(terminalId, data)
+  })
+
+  xterm.attachCustomKeyEventHandler((e) => {
+    if ((e.ctrlKey || e.metaKey) && e.shiftKey && (e.code === 'KeyC' || e.key?.toLowerCase() === 'c')) {
+      void copyAiTerminalSelection()
+      return false
+    }
+    if ((e.ctrlKey || e.metaKey) && e.shiftKey && (e.code === 'KeyV' || e.key?.toLowerCase() === 'v')) {
+      void pasteToAiTerminal()
+      return false
+    }
+    return true
+  })
+
+  aiXterms.set(terminalId, xterm)
+  aiFitAddons.set(terminalId, fitAddon)
+
+  aiTerminalSessions.value.push({
+    id: terminalId,
+    name: name || 'IA',
+    profileId: '',
+    profileName: 'Sem perfil',
+    cwd: ''
+  })
+  activeAiTerminalId.value = terminalId
+
+  // Garante que o listener de dados está ativo
+  if (!aiTerminalDataUnsub && window.monarco?.terminal?.onData) {
+    aiTerminalDataUnsub = window.monarco.terminal.onData((terminalIdFromEvent, data) => {
+      const target = aiXterms.get(terminalIdFromEvent)
+      if (!target) return
+      target.write(data)
+      captureResumeFromOutput(terminalIdFromEvent, data)
+    })
+  }
+
+  await nextTick()
+  mountAiTerminal(terminalId)
+
+  if (!aiTerminalResizeObserver && aiTerminalContainer.value) {
+    aiTerminalResizeObserver = new ResizeObserver(() => fitAiTerminal())
+    aiTerminalResizeObserver.observe(aiTerminalContainer.value)
+  }
 }
 
 async function createAiTerminalSession(options = {}) {
@@ -2156,6 +2292,8 @@ function handleAiTerminalContextKeydown(e) {
     closeAiTerminalContextMenu()
   }
 }
+
+defineExpose({ adoptAiTerminalSession })
 </script>
 
 <style scoped>
@@ -2417,6 +2555,7 @@ function handleAiTerminalContextKeydown(e) {
   opacity: 0.65;
 }
 
+.ai-terminal-tab-detach,
 .ai-terminal-tab-close {
   width: 18px;
   height: 18px;
@@ -2428,8 +2567,14 @@ function handleAiTerminalContextKeydown(e) {
   opacity: 0;
 }
 
+.ai-terminal-tab:hover .ai-terminal-tab-detach,
 .ai-terminal-tab:hover .ai-terminal-tab-close {
   opacity: 0.9;
+}
+
+.ai-terminal-tab-detach:hover {
+  background: rgba(255, 255, 255, 0.08);
+  color: var(--accent);
 }
 
 .ai-terminal-tab-close:hover {
