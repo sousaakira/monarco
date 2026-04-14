@@ -7,10 +7,15 @@ import { exec } from 'node:child_process'
 import { promisify } from 'node:util'
 import pty from 'node-pty'
 import { AIAgent, toolExecutor, toolDefinitions, CHAT_MODES } from './ai/index.js'
+import { GitModel, Git, GitError, GitErrorCodes } from './git/index.js'
 
 const execAsync = promisify(exec)
 
 const isDev = !app.isPackaged
+
+// Múltiplas instâncias são permitidas (como o VS Code)
+// Cada janela gerencia seu próprio workspace independentemente
+let _initialPathFromArgv = null  // será resolvido no startup
 
 /**
  * Tenta extrair um caminho de diretório dos argumentos da linha de comando
@@ -69,6 +74,7 @@ let currentWorkspacePath = null
 let workspaceFolders = []
 let mainWindow = null // Referência global para a janela principal
 let aiAgent = null // Instância global do agente de IA
+let gitModel = null // Instância global do modelo Git (gerencia múltiplos repos)
 
 // Terminal PTY instances
 const terminals = new Map()
@@ -700,6 +706,11 @@ async function setWorkspaceState({ folders, activeFolder }) {
     toolExecutor.setWorkspace(active)
   }
 
+  // Initialize/update GitModel with new workspace folders
+  if (gitModel) {
+    await gitModel.setWorkspaceFolders(workspaceFolders)
+  }
+
   emitWorkspaceChanged({ folders: workspaceFolders, activeFolder: active || '' })
   return { folders: workspaceFolders, activeFolder: active }
 }
@@ -734,6 +745,89 @@ function assertValidName(name) {
     throw new Error('Name must not include path separators')
   }
   return name.trim()
+}
+
+// ===== Workspace scoping utilities (modeled after VS Code / Void) =====
+
+/**
+ * Normalize a path for case-insensitive comparison.
+ * Linux is case-sensitive, but we treat it as-is.
+ * Windows/macOS are case-insensitive by default.
+ */
+function normalizePath(p) {
+  if (process.platform === 'win32' || process.platform === 'darwin') {
+    return p.toLowerCase()
+  }
+  return p
+}
+
+/**
+ * Check if `descendant` is inside `parent` (or equal to it).
+ * Mirrors VS Code's isDescendant in extensions/git/src/util.ts.
+ */
+function isDescendant(parent, descendant) {
+  if (parent === descendant) return true
+  const parentWithSep = parent.endsWith(path.sep) ? parent : parent + path.sep
+  return normalizePath(descendant).startsWith(normalizePath(parentWithSep))
+}
+
+/**
+ * Check if two paths are equivalent.
+ */
+function pathEquals(a, b) {
+  return normalizePath(a) === normalizePath(b)
+}
+
+/**
+ * Resolve the real (symlink-resolved) path, falling back to the original.
+ */
+async function safeRealPath(p) {
+  try {
+    return await fs.realpath(p)
+  } catch {
+    return p
+  }
+}
+
+/**
+ * Returns true if `repoPath` is inside any of the current workspace folders.
+ * Checks both the original paths and their realpath-resolved equivalents.
+ * Mirrors Void's isRepositoryOutsideWorkspace.
+ */
+async function isRepositoryOutsideWorkspace(repoPath) {
+  if (!workspaceFolders.length) return true
+
+  const normalizedRepo = path.resolve(repoPath)
+
+  // Build a set of workspace folder paths (original + realpath resolved)
+  const workspacePaths = new Set()
+  for (const folder of workspaceFolders) {
+    const resolved = path.resolve(folder)
+    workspacePaths.add(resolved)
+    const real = await safeRealPath(resolved)
+    workspacePaths.add(real)
+  }
+
+  // Check if repo is inside any workspace folder
+  for (const wp of workspacePaths) {
+    if (isDescendant(wp, normalizedRepo)) return false
+  }
+
+  return true
+}
+
+/**
+ * Validate that `repoPath` is within the current workspace.
+ * Throws if outside.
+ */
+async function assertRepoInWorkspace(repoPath) {
+  if (!workspaceFolders.length) throw new Error('No workspace selected')
+
+  const outside = await isRepositoryOutsideWorkspace(repoPath)
+  if (outside) {
+    throw new Error(`Repository "${repoPath}" is outside the workspace`)
+  }
+  return path.resolve(repoPath)
 }
 
 function parseGitStatus(status) {
@@ -1000,6 +1094,13 @@ app.whenReady().then(async () => {
     }
   })
 
+  // Retorna o caminho passado via argv ("Abrir com...") — consumido uma única vez
+  ipcMain.handle('workspace:getInitialPath', () => {
+    const p = _initialPathFromArgv
+    _initialPathFromArgv = null  // consome: próximas chamadas retornam null
+    return p || null
+  })
+
   ipcMain.handle('workspace:getLast', async () => {
     try {
       const last = await getLastWorkspace()
@@ -1261,326 +1362,455 @@ app.whenReady().then(async () => {
     }
   })
 
-  // ===== Git Handlers =====
-  
+  // ===== Git Handlers (using GitModel) =====
+
+  // Initialize GitModel when workspace is set
+  async function ensureGitModel() {
+    if (!gitModel) {
+      gitModel = new GitModel()
+    }
+    await gitModel.setWorkspaceFolders(workspaceFolders)
+    return gitModel
+  }
+
   // Verificar se é um repositório Git
-  ipcMain.handle('git:isRepository', async () => {
+  ipcMain.handle('git:isRepository', async (_evt, rootPath) => {
     try {
-      const workspacePath = assertWorkspaceSelected()
-      await execAsync('git rev-parse --git-dir', { cwd: workspacePath })
-      return true
+      const model = await ensureGitModel()
+      const repo = model.getRepository(rootPath || currentWorkspacePath)
+      if (repo) return repo.isRepo
+
+      // Fallback: check directly
+      const git = new Git()
+      return await git.isRepository(rootPath || currentWorkspacePath)
     } catch {
       return false
     }
   })
-  
+
   // Obter status do repositório
-  ipcMain.handle('git:status', async () => {
+  ipcMain.handle('git:status', async (_evt, rootPath) => {
     try {
-      const workspacePath = assertWorkspaceSelected()
-      const { stdout } = await execAsync('git status --porcelain', { cwd: workspacePath })
-      
-      const files = []
-      const lines = stdout.trim().split('\n').filter(Boolean)
-      
-      for (const line of lines) {
-        const status = line.substring(0, 2)
-        const filePath = line.substring(3)
-        
-        const parsedStatus = parseGitStatus(status)
-        const X = status[0] // Index (staging area)
-        const Y = status[1] // Working tree
-        
-        // X mostra status no index (staged)
-        // Y mostra status no working tree (unstaged)
-        const isStaged = X !== ' ' && X !== '?'
-        const isUnstaged = Y !== ' ' || parsedStatus === 'untracked'
-        
-        files.push({
-          path: filePath,
-          status: parsedStatus,
-          staged: isStaged,
-          unstaged: isUnstaged
-        })
+      const model = await ensureGitModel()
+      const repo = model.getRepository(rootPath || currentWorkspacePath)
+      if (!repo) {
+        throw new Error('Repository not found in workspace')
       }
-      
-      return files
+      // CRITICAL: repository.getStatus already filters to workspace boundary
+      const result = await repo.refresh()
+      return result.files
     } catch (e) {
       console.error('git:status failed', e)
       throw new Error('Failed to get git status')
     }
   })
-  
+
   // Obter branch atual
-  ipcMain.handle('git:currentBranch', async () => {
+  ipcMain.handle('git:currentBranch', async (_evt, rootPath) => {
     try {
-      const workspacePath = assertWorkspaceSelected()
-      const { stdout } = await execAsync('git branch --show-current', { cwd: workspacePath })
-      return stdout.trim()
+      const model = await ensureGitModel()
+      const repo = model.getRepository(rootPath || currentWorkspacePath)
+      if (!repo) return 'unknown'
+      return repo.branch || 'unknown'
     } catch (e) {
       console.error('git:currentBranch failed', e)
       return 'unknown'
     }
   })
-  
-  // Stage arquivo (melhorado)
-  ipcMain.handle('git:stage', async (_evt, filePath) => {
+
+  // Stage arquivo
+  ipcMain.handle('git:stage', async (_evt, filePath, rootPath) => {
     try {
-      const workspacePath = assertWorkspaceSelected()
-      // Usa -A para adicionar tudo (novo no Void)
-      await execAsync(`git add -A "${filePath}"`, { cwd: workspacePath })
+      const model = await ensureGitModel()
+      const repo = model.getRepository(rootPath || currentWorkspacePath)
+      if (!repo) {
+        throw new Error('Repository not found')
+      }
+      // CRITICAL: validates file is inside repo/workspace
+      await repo.stageFile(filePath)
       return true
     } catch (e) {
       console.error('git:stage failed', e)
       throw new Error(`Failed to stage ${filePath}`)
     }
   })
-  
+
   // Unstage arquivo
-  ipcMain.handle('git:unstage', async (_evt, filePath) => {
+  ipcMain.handle('git:unstage', async (_evt, filePath, rootPath) => {
     try {
-      const workspacePath = assertWorkspaceSelected()
-      await execAsync(`git reset HEAD "${filePath}"`, { cwd: workspacePath })
+      const model = await ensureGitModel()
+      const repo = model.getRepository(rootPath || currentWorkspacePath)
+      if (!repo) throw new Error('Repository not found')
+      await repo.git.unstage(repo.rootPath, filePath)
       return true
     } catch (e) {
       console.error('git:unstage failed', e)
       throw new Error(`Failed to unstage ${filePath}`)
     }
   })
-  
+
   // Descartar mudanças
-  ipcMain.handle('git:discard', async (_evt, filePath) => {
+  ipcMain.handle('git:discard', async (_evt, filePath, rootPath) => {
     try {
-      const workspacePath = assertWorkspaceSelected()
-      await execAsync(`git checkout -- "${filePath}"`, { cwd: workspacePath })
+      const model = await ensureGitModel()
+      const repo = model.getRepository(rootPath || currentWorkspacePath)
+      if (!repo) throw new Error('Repository not found')
+      await repo.git.discard(repo.rootPath, filePath)
       return true
     } catch (e) {
       console.error('git:discard failed', e)
       throw new Error(`Failed to discard changes in ${filePath}`)
     }
   })
-  
+
   // Commit
-  ipcMain.handle('git:commit', async (_evt, message) => {
+  ipcMain.handle('git:commit', async (_evt, message, rootPath) => {
     try {
-      const workspacePath = assertWorkspaceSelected()
-      
-      // Verifica se o Git está configurado
-      try {
-        await execAsync('git config user.name', { cwd: workspacePath })
-        await execAsync('git config user.email', { cwd: workspacePath })
-      } catch (configError) {
-        throw new Error('Git não está configurado. Configure seu nome e email primeiro.')
-      }
-      
-      // Verifica se há arquivos staged usando git status
-      const { stdout: statusOutput } = await execAsync('git status --porcelain', { cwd: workspacePath })
-      const lines = statusOutput.trim().split('\n').filter(Boolean)
-      const hasStagedFiles = lines.some(line => {
-        const X = line[0]
-        return X !== ' ' && X !== '?'
-      })
-      
-      if (!hasStagedFiles) {
-        throw new Error('Nenhum arquivo no stage. Use o botão + para adicionar arquivos antes de commitar.')
-      }
-      
-      const escapedMessage = message.replace(/"/g, '\\"')
-      await execAsync(`git commit -m "${escapedMessage}"`, { cwd: workspacePath })
+      const model = await ensureGitModel()
+      const repo = model.getRepository(rootPath || currentWorkspacePath)
+      if (!repo) throw new Error('Repository not found')
+      await repo.git.commit(repo.rootPath, message)
       return true
     } catch (e) {
       console.error('git:commit failed', e)
       throw new Error(e.message || 'Falha ao fazer commit')
     }
   })
-  
+
   // Configurar usuário Git
-  ipcMain.handle('git:config', async (_evt, key, value) => {
+  ipcMain.handle('git:config', async (_evt, key, value, rootPath) => {
     try {
-      const workspacePath = assertWorkspaceSelected()
-      await execAsync(`git config ${key} "${value}"`, { cwd: workspacePath })
+      const model = await ensureGitModel()
+      const repo = model.getRepository(rootPath || currentWorkspacePath)
+      if (!repo) throw new Error('Repository not found')
+      await repo.git.setConfig(repo.rootPath, key, value)
       return true
     } catch (e) {
       console.error('git:config failed', e)
       throw new Error(`Failed to set git config ${key}`)
     }
   })
-  
+
   // Obter configuração Git
-  ipcMain.handle('git:getConfig', async (_evt, key) => {
+  ipcMain.handle('git:getConfig', async (_evt, key, rootPath) => {
     try {
-      const workspacePath = assertWorkspaceSelected()
-      const { stdout } = await execAsync(`git config ${key}`, { cwd: workspacePath })
-      return stdout.trim()
+      const model = await ensureGitModel()
+      const repo = model.getRepository(rootPath || currentWorkspacePath)
+      if (!repo) return null
+      return await repo.git.getConfig(repo.rootPath, key)
     } catch (e) {
-      return null // Config não existe
+      return null
     }
   })
-  
+
   // Inicializar repositório
-  ipcMain.handle('git:init', async () => {
+  ipcMain.handle('git:init', async (_evt, rootPath) => {
     try {
-      const workspacePath = assertWorkspaceSelected()
-      await execAsync('git init', { cwd: workspacePath })
+      const model = await ensureGitModel()
+      const git = new Git()
+      await git.init(rootPath || currentWorkspacePath)
+      // Refresh model to discover new repo
+      await model.discoverRepositories()
       return true
     } catch (e) {
       console.error('git:init failed', e)
       throw new Error('Failed to initialize git repository')
     }
   })
-  
+
   // ===== Comandos Git Avançados =====
-  
+
   // Pull
-  ipcMain.handle('git:pull', async () => {
+  ipcMain.handle('git:pull', async (_evt, rootPath) => {
     try {
-      const workspacePath = assertWorkspaceSelected()
-      const { stdout, stderr } = await execAsync('git pull', { cwd: workspacePath })
-      return { success: true, message: stdout || stderr }
+      const model = await ensureGitModel()
+      const repo = model.getRepository(rootPath || currentWorkspacePath)
+      if (!repo) throw new Error('Repository not found')
+      return await repo.git.pull(repo.rootPath)
     } catch (e) {
       console.error('git:pull failed', e)
       throw new Error('Failed to pull: ' + e.message)
     }
   })
-  
+
   // Push
-  ipcMain.handle('git:push', async () => {
+  ipcMain.handle('git:push', async (_evt, rootPath) => {
     try {
-      const workspacePath = assertWorkspaceSelected()
-      const { stdout, stderr } = await execAsync('git push', { cwd: workspacePath })
-      return { success: true, message: stdout || stderr }
+      const model = await ensureGitModel()
+      const repo = model.getRepository(rootPath || currentWorkspacePath)
+      if (!repo) throw new Error('Repository not found')
+      return await repo.git.push(repo.rootPath)
     } catch (e) {
       console.error('git:push failed', e)
       throw new Error('Failed to push: ' + e.message)
     }
   })
-  
+
   // Fetch
-  ipcMain.handle('git:fetch', async () => {
+  ipcMain.handle('git:fetch', async (_evt, rootPath) => {
     try {
-      const workspacePath = assertWorkspaceSelected()
-      const { stdout, stderr } = await execAsync('git fetch', { cwd: workspacePath })
-      return { success: true, message: stdout || stderr }
+      const model = await ensureGitModel()
+      const repo = model.getRepository(rootPath || currentWorkspacePath)
+      if (!repo) throw new Error('Repository not found')
+      return await repo.git.fetch(repo.rootPath)
     } catch (e) {
       console.error('git:fetch failed', e)
       throw new Error('Failed to fetch: ' + e.message)
     }
   })
-  
+
   // Listar branches
-  ipcMain.handle('git:branches', async () => {
+  ipcMain.handle('git:branches', async (_evt, rootPath) => {
     try {
-      const workspacePath = assertWorkspaceSelected()
-      const { stdout } = await execAsync('git branch -a', { cwd: workspacePath })
-      
-      const branches = stdout.trim().split('\n').map(line => {
-        const isCurrent = line.startsWith('*')
-        const name = line.replace(/^\*?\s+/, '').trim()
-        const isRemote = name.startsWith('remotes/')
-        
-        return {
-          name: name.replace('remotes/', ''),
-          current: isCurrent,
-          remote: isRemote
-        }
-      }).filter(b => b.name && b.name !== 'HEAD')
-      
-      return branches
+      const model = await ensureGitModel()
+      const repo = model.getRepository(rootPath || currentWorkspacePath)
+      if (!repo) return []
+      return await repo.git.getBranches(repo.rootPath)
     } catch (e) {
       console.error('git:branches failed', e)
       return []
     }
   })
-  
+
   // Criar branch
-  ipcMain.handle('git:createBranch', async (_evt, branchName) => {
+  ipcMain.handle('git:createBranch', async (_evt, branchName, rootPath) => {
     try {
-      const workspacePath = assertWorkspaceSelected()
-      await execAsync(`git branch "${branchName}"`, { cwd: workspacePath })
+      const model = await ensureGitModel()
+      const repo = model.getRepository(rootPath || currentWorkspacePath)
+      if (!repo) throw new Error('Repository not found')
+      await repo.git.createBranch(repo.rootPath, branchName)
       return true
     } catch (e) {
       console.error('git:createBranch failed', e)
       throw new Error(`Failed to create branch ${branchName}`)
     }
   })
-  
+
   // Trocar branch
-  ipcMain.handle('git:checkout', async (_evt, branchName) => {
+  ipcMain.handle('git:checkout', async (_evt, branchName, rootPath) => {
     try {
-      const workspacePath = assertWorkspaceSelected()
-      await execAsync(`git checkout "${branchName}"`, { cwd: workspacePath })
+      const model = await ensureGitModel()
+      const repo = model.getRepository(rootPath || currentWorkspacePath)
+      if (!repo) throw new Error('Repository not found')
+      await repo.git.checkout(repo.rootPath, branchName)
       return true
     } catch (e) {
       console.error('git:checkout failed', e)
       throw new Error(`Failed to checkout branch ${branchName}`)
     }
   })
-  
+
   // Deletar branch
-  ipcMain.handle('git:deleteBranch', async (_evt, branchName) => {
+  ipcMain.handle('git:deleteBranch', async (_evt, branchName, rootPath) => {
     try {
-      const workspacePath = assertWorkspaceSelected()
-      await execAsync(`git branch -d "${branchName}"`, { cwd: workspacePath })
+      const model = await ensureGitModel()
+      const repo = model.getRepository(rootPath || currentWorkspacePath)
+      if (!repo) throw new Error('Repository not found')
+      await repo.git.deleteBranch(repo.rootPath, branchName)
       return true
     } catch (e) {
       console.error('git:deleteBranch failed', e)
       throw new Error(`Failed to delete branch ${branchName}`)
     }
   })
-  
+
   // Histórico de commits
-  ipcMain.handle('git:log', async (_evt, options = {}) => {
+  ipcMain.handle('git:log', async (_evt, options = {}, rootPath) => {
     try {
-      const workspacePath = assertWorkspaceSelected()
-      const limit = options.limit || 50
-      const skip = options.skip || 0
-      
-      // Format: hash|author|email|date|subject
-      const format = '%H|%an|%ae|%ai|%s'
-      const cmd = `git log --format="${format}" --max-count=${limit} --skip=${skip}`
-      
-      const { stdout } = await execAsync(cmd, { cwd: workspacePath })
-      
-      if (!stdout.trim()) {
-        return []
-      }
-      
-      const commits = stdout.trim().split('\n').map(line => {
-        const [hash, author, email, date, subject] = line.split('|')
-        return {
-          hash: hash.trim(),
-          shortHash: hash.trim().substring(0, 7),
-          author: author.trim(),
-          email: email.trim(),
-          date: date.trim(),
-          subject: subject.trim()
-        }
-      })
-      
-      return commits
+      const model = await ensureGitModel()
+      const repo = model.getRepository(rootPath || currentWorkspacePath)
+      if (!repo) return []
+      return await repo.git.getLog(repo.rootPath, options)
     } catch (e) {
       console.error('git:log failed', e)
       return []
     }
   })
-  
+
   // Diff de arquivo
-  ipcMain.handle('git:diff', async (_evt, filePath, staged = false) => {
+  ipcMain.handle('git:diff', async (_evt, filePath, staged = false, rootPath) => {
     try {
-      const workspacePath = assertWorkspaceSelected()
-      const flag = staged ? '--cached' : ''
-      const cmd = `git diff ${flag} -- "${filePath}"`
-      
-      const { stdout } = await execAsync(cmd, { cwd: workspacePath })
-      
-      if (!stdout.trim()) {
-        return null
-      }
-      
-      return stdout
+      const model = await ensureGitModel()
+      const repo = model.getRepository(rootPath || currentWorkspacePath)
+      if (!repo) return null
+      return await repo.git.getDiff(repo.rootPath, filePath, staged)
     } catch (e) {
       console.error('git:diff failed', e)
       return null
+    }
+  })
+
+  // Status de todos os repos do workspace
+  ipcMain.handle('git:allRepos', async () => {
+    try {
+      const model = await ensureGitModel()
+      return await model.getRepositoryStates()
+    } catch (e) {
+      console.error('git:allRepos failed', e)
+      return []
+    }
+  })
+
+  // Stage all files in repository
+  ipcMain.handle('git:stageAll', async (_evt, rootPath) => {
+    try {
+      const model = await ensureGitModel()
+      const repo = model.getRepository(rootPath || currentWorkspacePath)
+      if (!repo) throw new Error('Repository not found')
+      await repo.git.stageAll(repo.rootPath)
+      return true
+    } catch (e) {
+      console.error('git:stageAll failed', e)
+      throw new Error('Failed to stage all files')
+    }
+  })
+
+  // Unstage all files in repository
+  ipcMain.handle('git:unstageAll', async (_evt, rootPath) => {
+    try {
+      const model = await ensureGitModel()
+      const repo = model.getRepository(rootPath || currentWorkspacePath)
+      if (!repo) throw new Error('Repository not found')
+      await repo.git.unstageAll(repo.rootPath)
+      return true
+    } catch (e) {
+      console.error('git:unstageAll failed', e)
+      throw new Error('Failed to unstage all files')
+    }
+  })
+
+  // Discard all changes in repository
+  ipcMain.handle('git:discardAll', async (_evt, rootPath) => {
+    try {
+      const model = await ensureGitModel()
+      const repo = model.getRepository(rootPath || currentWorkspacePath)
+      if (!repo) throw new Error('Repository not found')
+      await repo.git.discardAll(repo.rootPath)
+      return true
+    } catch (e) {
+      console.error('git:discardAll failed', e)
+      throw new Error('Failed to discard all changes')
+    }
+  })
+
+  // Refresh all repositories
+  ipcMain.handle('git:refreshAll', async () => {
+    try {
+      const model = await ensureGitModel()
+      await model.refreshAll()
+      return await model.getRepositoryStates()
+    } catch (e) {
+      console.error('git:refreshAll failed', e)
+      throw e
+    }
+  })
+
+  // Refresh single repository
+  ipcMain.handle('git:refreshRepo', async (_evt, rootPath) => {
+    try {
+      const model = await ensureGitModel()
+      const result = await model.refreshRepo(rootPath || currentWorkspacePath)
+      return result
+    } catch (e) {
+      console.error('git:refreshRepo failed', e)
+      throw e
+    }
+  })
+
+  // Gerar mensagem de commit com IA
+  ipcMain.handle('git:generateCommitMessage', async (_evt, rootPath) => {
+    try {
+      const model = await ensureGitModel()
+      const repo = model.getRepository(rootPath || currentWorkspacePath)
+      if (!repo) throw new Error('Repository not found')
+
+      // Coletar contexto git em paralelo
+      const [statR, branchR, logR, namesR] = await Promise.allSettled([
+        repo.git.getDiffStat(repo.rootPath),
+        repo.git.getCurrentBranch(repo.rootPath),
+        repo.git.getLog(repo.rootPath, { limit: 5 }),
+        repo.git.getStagedFileNames(repo.rootPath)
+      ])
+
+      const stat = statR.status === 'fulfilled' ? statR.value : ''
+      const branch = branchR.status === 'fulfilled' ? branchR.value : 'unknown'
+      const recentLog = logR.status === 'fulfilled'
+        ? logR.value.map((c) => `${c.shortHash}|${c.subject}`).join('\n')
+        : ''
+      const stagedNames = namesR.status === 'fulfilled' ? namesR.value : []
+
+      if (!stat && !stagedNames.length) {
+        throw new Error('Nenhuma mudança staged para gerar mensagem.')
+      }
+
+      // Diffs dos top 5 arquivos staged
+      const topFiles = stagedNames.slice(0, 5)
+      const diffResults = await Promise.allSettled(
+        topFiles.map((f) => repo.git.getDiff(repo.rootPath, f, true))
+      )
+      let sampledDiffs = ''
+      for (let i = 0; i < topFiles.length; i++) {
+        const r = diffResults[i]
+        if (r.status === 'fulfilled' && r.value) {
+          sampledDiffs += `\n==== ${topFiles[i]} ====\n${r.value.substring(0, 3000)}`
+        }
+      }
+
+      // Configurações de IA
+      const settings = await loadSettings()
+      const aiCfg = settings.ai || {}
+      const endpoint = aiCfg.endpoint || 'https://ia.auth.com.br/v1/chat/completions'
+      const aiModel = aiCfg.model || 'Qwen/Qwen2.5-Coder-7B-Instruct-AWQ'
+      const apiKey = aiCfg.apiKey || ''
+
+      const systemPrompt = `You are an expert software engineer responsible for writing clear, concise Git commit messages that describe the purpose and intent of changes.
+Rules:
+- One sentence, under 72 characters
+- Use imperative mood: "Add feature", "Fix bug", "Refactor service"
+- Respond ONLY with the commit message — no quotes, no markdown, no explanation`
+
+      const userMessage = `Write a concise commit message for these staged changes.
+
+Branch: ${branch}
+
+Changes summary (git diff --stat):
+${stat || '(no summary)'}
+
+File diffs:
+${sampledDiffs || '(no diffs)'}
+
+Recent commits (style reference):
+${recentLog || '(no commits yet)'}`
+
+      const response = await fetch(endpoint, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...(apiKey ? { Authorization: `Bearer ${apiKey}` } : {})
+        },
+        body: JSON.stringify({
+          model: aiModel,
+          messages: [
+            { role: 'system', content: systemPrompt },
+            { role: 'user', content: userMessage }
+          ],
+          max_tokens: 100,
+          temperature: 0.3
+        })
+      })
+
+      if (!response.ok) {
+        throw new Error(`LLM request failed: ${response.status} ${response.statusText}`)
+      }
+
+      const data = await response.json()
+      const message = data.choices?.[0]?.message?.content?.trim() || ''
+      if (!message) throw new Error('LLM retornou resposta vazia')
+
+      return message.replace(/^["']|["']$/g, '').trim()
+    } catch (e) {
+      console.error('git:generateCommitMessage failed', e)
+      throw new Error(e.message || 'Falha ao gerar mensagem de commit')
     }
   })
 
@@ -2079,16 +2309,13 @@ app.whenReady().then(async () => {
     }
   } catch {}
 
-  const win = createWindow()
+  // Resolve o caminho inicial dos argumentos antes de criar a janela
+  _initialPathFromArgv = await getPathFromArgv(process.argv)
+  if (_initialPathFromArgv) {
+    log('info', 'app:startup', 'Caminho inicial detectado via argv', { path: _initialPathFromArgv })
+  }
 
-  // Verifica se o app foi iniciado com um caminho via CLI
-  win.webContents.once('did-finish-load', async () => {
-    const pathFromArgv = await getPathFromArgv(process.argv)
-    if (pathFromArgv) {
-      log('info', 'app:startup', 'Abrindo workspace inicial via CLI', { path: pathFromArgv })
-      win.webContents.send('workspace:open-from-cli', pathFromArgv)
-    }
-  })
+  createWindow()
 
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow()

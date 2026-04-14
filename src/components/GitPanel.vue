@@ -1,119 +1,192 @@
 <template>
   <div class="git-root">
 
-    <!-- ── Toolbar ── -->
+    <!-- ── Toolbar global ── -->
     <div class="git-toolbar">
       <span class="git-toolbar-title">SOURCE CONTROL</span>
       <div class="git-toolbar-btns">
-        <button class="git-tbtn" title="Pull"        :disabled="loading" @click="$emit('pull')">   <i class="gi gi-pull"></i>  </button>
-        <button class="git-tbtn" title="Push"        :disabled="loading" @click="$emit('push')">   <i class="gi gi-push"></i>  </button>
-        <button class="git-tbtn" title="Sincronizar" :disabled="loading" @click="$emit('refresh')"><i class="gi gi-sync" :class="{'gi-spin':loading}"></i></button>
-        <button class="git-tbtn" title="Mais ações">                                               <i class="gi gi-more"></i>  </button>
+        <button class="git-tbtn" title="Atualizar todos os repos" :disabled="loading" @click="$emit('refresh')">
+          <i class="gi gi-sync" :class="{'gi-spin': loading}"></i>
+        </button>
       </div>
     </div>
 
-    <!-- ── Sem repo ── -->
-    <div v-if="!isGitRepo && !loading" class="git-empty">
+    <!-- ── Sem workspace ── -->
+    <div v-if="!repos || repos.length === 0" class="git-empty">
       <i class="gi gi-branch" style="font-size:28px;opacity:.18;display:block;margin-bottom:10px;"></i>
-      <p>Nenhum repositório Git encontrado.</p>
-      <button class="git-action-btn" @click="$emit('initRepo')">Inicializar Repositório</button>
+      <p>Nenhum workspace aberto.</p>
     </div>
 
-    <div v-else-if="loading && !stagedFiles.length && !unstagedFiles.length" class="git-empty">
-      <i class="gi gi-sync gi-spin" style="font-size:20px;opacity:.3;display:block;margin-bottom:8px;"></i>
-      <span style="font-size:11px;opacity:.5">Atualizando...</span>
-    </div>
-
-    <!-- ── Conteúdo principal ── -->
+    <!-- ── Corpo principal (multi-repo) ── -->
     <template v-else>
-
-      <!-- Área scrollável (topo) — ocupa espaço disponível -->
       <div class="git-body">
 
-        <!-- Input -->
-        <div class="git-input-row">
-          <textarea
-            :value="commitMessage"
-            @input="$emit('update:commitMessage', $event.target.value)"
-            class="git-msg-input"
-            :placeholder="`Mensagem (Ctrl+Enter para commitar em &quot;${branch}&quot;)`"
-            rows="3"
-            @keydown.ctrl.enter.prevent="tryCommit"
-            @keydown.meta.enter.prevent="tryCommit"
-          ></textarea>
-        </div>
+        <!-- Uma seção por repo -->
+        <div v-for="repo in repos" :key="repo.path" class="git-repo-section">
 
-        <!-- Commit split-button -->
-        <div class="git-commit-row">
-          <button class="git-commit-main" :disabled="!stagedFiles.length || !commitMessage.trim()" @click="tryCommit">
-            <i class="gi gi-check"></i>
-            <span>Commit</span>
-            <kbd class="git-kbd">Ctrl+Enter</kbd>
-          </button>
-          <div class="git-commit-sep"></div>
-          <button class="git-commit-arrow" :disabled="!stagedFiles.length || !commitMessage.trim()" title="Mais opções">
-            <i class="gi gi-chevron-down"></i>
-          </button>
-        </div>
-
-        <!-- Staged -->
-        <div v-if="stagedFiles.length > 0" class="git-group">
-          <div class="git-group-hd" @click="stagedOpen = !stagedOpen">
-            <i class="gi gi-chevron-right git-chevron" :class="{open:stagedOpen}"></i>
-            <span class="git-group-name">Staged Changes</span>
-            <span class="git-badge">{{ stagedFiles.length }}</span>
-            <div class="git-group-actions" @click.stop>
-              <button class="git-icon-btn" title="Remover tudo do stage" @click="$emit('unstageAll')"><i class="gi gi-minus"></i></button>
-            </div>
-          </div>
-          <div v-show="stagedOpen" class="git-file-list">
-            <div v-for="f in stagedFiles" :key="'s-'+f.path" class="git-file-row" @click="$emit('showDiff',f.path,true)">
-              <div class="git-file-label">
-                <span class="git-file-name">{{ fileName(f.path) }}</span>
-                <span class="git-file-path">{{ fileDir(f.path) }}</span>
+          <!-- Cabeçalho do repo (colapsível) -->
+          <div class="git-repo-hd" @click="toggleRepo(repo.path)">
+            <i class="gi gi-chevron-right git-chevron" :class="{open: isRepoOpen(repo.path)}"></i>
+            <span class="git-repo-name">{{ repo.name }}</span>
+            <template v-if="repo.isRepo">
+              <span class="git-branch-chip">
+                <i class="gi gi-branch" style="width:10px;height:10px;margin-right:3px;"></i>{{ repo.branch || '—' }}
+              </span>
+              <div class="git-group-actions" @click.stop>
+                <span v-if="totalChanges(repo) > 0" class="git-badge">{{ totalChanges(repo) }}</span>
+                <button class="git-icon-btn" title="Pull" @click="$emit('pull', repo.path)"><i class="gi gi-pull"></i></button>
+                <button class="git-icon-btn" title="Push" @click="$emit('push', repo.path)"><i class="gi gi-push"></i></button>
+                <button class="git-icon-btn" title="Atualizar" @click="$emit('refresh', repo.path)"><i class="gi gi-sync"></i></button>
               </div>
-              <span class="git-status" :class="'gs-'+f.status">{{ statusLetter(f.status) }}</span>
-              <div class="git-row-actions">
-                <button class="git-icon-btn" title="Abrir"          @click.stop="$emit('openFile',f.path)"><i class="gi gi-open"></i></button>
-                <button class="git-icon-btn" title="Remover stage"  @click.stop="$emit('unstage',f.path)"><i class="gi gi-minus"></i></button>
-              </div>
+            </template>
+            <template v-else>
+              <span class="git-no-repo-tag">não é git</span>
+            </template>
+          </div>
+
+          <!-- Conteúdo do repo (colapsado) -->
+          <div v-if="isRepoOpen(repo.path)">
+
+            <!-- Não é repo git -->
+            <div v-if="!repo.isRepo" class="git-not-repo">
+              <p>Esta pasta não é um repositório Git.</p>
+              <button class="git-action-btn" @click="$emit('initRepo', repo.path)">Inicializar Repositório</button>
             </div>
+
+            <!-- É repo git -->
+            <template v-else>
+
+              <!-- Input de mensagem de commit -->
+              <div class="git-input-row">
+                <textarea
+                  :value="repo.commitMessage"
+                  @input="$emit('update:repoCommitMessage', repo.path, $event.target.value)"
+                  class="git-msg-input"
+                  :placeholder="`Mensagem (Ctrl+Enter para commitar)`"
+                  rows="2"
+                  @keydown.ctrl.enter.prevent="tryCommit(repo)"
+                  @keydown.meta.enter.prevent="tryCommit(repo)"
+                ></textarea>
+              </div>
+
+              <!-- Botões Commit + IA -->
+              <div class="git-commit-row">
+                <!-- Botão ✨ IA -->
+                <button
+                  class="git-ai-btn"
+                  :class="{ 'git-ai-btn--loading': repo.loadingAI }"
+                  :disabled="!stagedOf(repo).length || repo.loadingAI"
+                  @click="$emit('generateMessage', repo.path)"
+                  title="Gerar mensagem de commit com IA (✨)"
+                >
+                  <span v-if="repo.loadingAI" class="git-ai-spin">⟳</span>
+                  <span v-else>✨</span>
+                </button>
+                <!-- Commit principal -->
+                <button
+                  class="git-commit-main"
+                  :disabled="!stagedOf(repo).length || !repo.commitMessage?.trim()"
+                  @click="tryCommit(repo)"
+                >
+                  <i class="gi gi-check"></i>
+                  <span>Commit</span>
+                  <kbd class="git-kbd">Ctrl+Enter</kbd>
+                </button>
+                <div class="git-commit-sep"></div>
+                <button
+                  class="git-commit-arrow"
+                  :disabled="!stagedOf(repo).length || !repo.commitMessage?.trim()"
+                  title="Mais opções"
+                >
+                  <i class="gi gi-chevron-down"></i>
+                </button>
+              </div>
+
+              <!-- Staged Changes -->
+              <div v-if="stagedOf(repo).length > 0" class="git-group">
+                <div class="git-group-hd" @click="toggleSection(repo.path, 'staged')">
+                  <i class="gi gi-chevron-right git-chevron" :class="{open: isSectionOpen(repo.path, 'staged')}"></i>
+                  <span class="git-group-name">Staged Changes</span>
+                  <span class="git-badge">{{ stagedOf(repo).length }}</span>
+                  <div class="git-group-actions" @click.stop>
+                    <button class="git-icon-btn" title="Remover tudo do stage" @click="$emit('unstageAll', repo.path)">
+                      <i class="gi gi-minus"></i>
+                    </button>
+                  </div>
+                </div>
+                <div v-show="isSectionOpen(repo.path, 'staged')" class="git-file-list">
+                  <div
+                    v-for="f in stagedOf(repo)" :key="'s-'+f.path"
+                    class="git-file-row"
+                    @click="$emit('showDiff', f.path, true, repo.path)"
+                  >
+                    <div class="git-file-label">
+                      <span class="git-file-name">{{ fileName(f.path) }}</span>
+                      <span class="git-file-path">{{ fileDir(f.path) }}</span>
+                    </div>
+                    <span class="git-status" :class="'gs-'+f.status">{{ statusLetter(f.status) }}</span>
+                    <div class="git-row-actions">
+                      <button class="git-icon-btn" title="Abrir" @click.stop="$emit('openFile', f.path, repo.path)">
+                        <i class="gi gi-open"></i>
+                      </button>
+                      <button class="git-icon-btn" title="Remover stage" @click.stop="$emit('unstage', f.path, repo.path)">
+                        <i class="gi gi-minus"></i>
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              <!-- Changes (unstaged) -->
+              <div v-if="unstagedOf(repo).length > 0" class="git-group">
+                <div class="git-group-hd" @click="toggleSection(repo.path, 'changes')">
+                  <i class="gi gi-chevron-right git-chevron" :class="{open: isSectionOpen(repo.path, 'changes')}"></i>
+                  <span class="git-group-name">Changes</span>
+                  <span class="git-badge">{{ unstagedOf(repo).length }}</span>
+                  <div class="git-group-actions" @click.stop>
+                    <button class="git-icon-btn" title="Stage All" @click="$emit('stageAll', repo.path)">
+                      <i class="gi gi-plus"></i>
+                    </button>
+                    <button class="git-icon-btn git-icon-btn--danger" title="Discard All" @click="$emit('discardAll', repo.path)">
+                      <i class="gi gi-discard"></i>
+                    </button>
+                  </div>
+                </div>
+                <div v-show="isSectionOpen(repo.path, 'changes')" class="git-file-list">
+                  <div
+                    v-for="f in unstagedOf(repo)" :key="'u-'+f.path"
+                    class="git-file-row"
+                    @click="$emit('showDiff', f.path, false, repo.path)"
+                  >
+                    <div class="git-file-label">
+                      <span class="git-file-name">{{ fileName(f.path) }}</span>
+                      <span class="git-file-path">{{ fileDir(f.path) }}</span>
+                    </div>
+                    <span class="git-status" :class="'gs-'+f.status">{{ statusLetter(f.status) }}</span>
+                    <div class="git-row-actions">
+                      <button class="git-icon-btn" title="Abrir" @click.stop="$emit('openFile', f.path, repo.path)">
+                        <i class="gi gi-open"></i>
+                      </button>
+                      <button class="git-icon-btn" title="Stage" @click.stop="$emit('stage', f.path, repo.path)">
+                        <i class="gi gi-plus"></i>
+                      </button>
+                      <button class="git-icon-btn git-icon-btn--danger" title="Discard" @click.stop="$emit('discard', f.path, repo.path)">
+                        <i class="gi gi-discard"></i>
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              <!-- Sem alterações -->
+              <div v-if="!stagedOf(repo).length && !unstagedOf(repo).length" class="git-clean">
+                <i class="gi gi-check" style="margin-right:6px;opacity:.4"></i>
+                <span>Sem alterações pendentes</span>
+              </div>
+
+            </template>
           </div>
         </div>
-
-        <!-- Changes -->
-        <div v-if="unstagedFiles.length > 0" class="git-group">
-          <div class="git-group-hd" @click="changesOpen = !changesOpen">
-            <i class="gi gi-chevron-right git-chevron" :class="{open:changesOpen}"></i>
-            <span class="git-group-name">Changes</span>
-            <span class="git-badge">{{ unstagedFiles.length }}</span>
-            <div class="git-group-actions" @click.stop>
-              <button class="git-icon-btn"                title="Stage All"   @click="$emit('stageAll')">  <i class="gi gi-plus"></i></button>
-              <button class="git-icon-btn git-icon-btn--danger" title="Discard All" @click="$emit('discardAll')"><i class="gi gi-discard"></i></button>
-            </div>
-          </div>
-          <div v-show="changesOpen" class="git-file-list">
-            <div v-for="f in unstagedFiles" :key="'u-'+f.path" class="git-file-row" @click="$emit('showDiff',f.path,false)">
-              <div class="git-file-label">
-                <span class="git-file-name">{{ fileName(f.path) }}</span>
-                <span class="git-file-path">{{ fileDir(f.path) }}</span>
-              </div>
-              <span class="git-status" :class="'gs-'+f.status">{{ statusLetter(f.status) }}</span>
-              <div class="git-row-actions">
-                <button class="git-icon-btn"                  title="Abrir"   @click.stop="$emit('openFile',f.path)"><i class="gi gi-open"></i></button>
-                <button class="git-icon-btn"                  title="Stage"   @click.stop="$emit('stage',f.path)">  <i class="gi gi-plus"></i></button>
-                <button class="git-icon-btn git-icon-btn--danger" title="Discard" @click.stop="$emit('discard',f.path)"><i class="gi gi-discard"></i></button>
-              </div>
-            </div>
-          </div>
-        </div>
-
-        <!-- Sem alterações -->
-        <div v-if="!stagedFiles.length && !unstagedFiles.length" class="git-clean">
-          <i class="gi gi-check" style="margin-right:6px;opacity:.4"></i>
-          <span>Sem alterações pendentes</span>
-        </div>
-
       </div><!-- /git-body -->
 
       <!-- ── Sash de redimensionamento ── -->
@@ -126,11 +199,11 @@
       <!-- ── Histórico de commits (rodapé fixo redimensionável) ── -->
       <div class="git-commits-panel" :style="{ height: commitsOpen ? commitsHeight + 'px' : '22px' }">
         <div class="git-group-hd" @click="toggleCommits">
-          <i class="gi gi-chevron-right git-chevron" :class="{open:commitsOpen}"></i>
+          <i class="gi gi-chevron-right git-chevron" :class="{open: commitsOpen}"></i>
           <span class="git-group-name">Histórico de Commits</span>
           <div class="git-group-actions" @click.stop>
-            <button class="git-icon-btn" :disabled="loadingCommits" title="Atualizar" @click="$emit('refreshCommits')">
-              <i class="gi gi-sync" :class="{'gi-spin':loadingCommits}"></i>
+            <button class="git-icon-btn" :disabled="loadingCommits" title="Atualizar" @click="$emit('refreshCommits', activeRepoPath)">
+              <i class="gi gi-sync" :class="{'gi-spin': loadingCommits}"></i>
             </button>
           </div>
         </div>
@@ -145,7 +218,7 @@
             <div class="git-commit-subject">{{ c.subject }}</div>
             <div class="git-commit-author">{{ c.author }}</div>
           </div>
-          <button v-if="commits.length >= 20" class="git-more-btn" :disabled="loadingCommits" @click="$emit('loadMoreCommits')">
+          <button v-if="commits.length >= 20" class="git-more-btn" :disabled="loadingCommits" @click="$emit('loadMoreCommits', activeRepoPath)">
             {{ loadingCommits ? 'Carregando...' : 'Carregar mais' }}
           </button>
         </div>
@@ -156,52 +229,101 @@
 </template>
 
 <script setup>
-import { ref } from 'vue'
+import { ref, computed, watch } from 'vue'
 
 const props = defineProps({
-  isGitRepo:      { type: Boolean, default: false },
-  loading:        { type: Boolean, default: false },
-  loadingCommits: { type: Boolean, default: false },
-  stagedFiles:    { type: Array,   default: () => [] },
-  unstagedFiles:  { type: Array,   default: () => [] },
-  commits:        { type: Array,   default: () => [] },
-  commitMessage:  { type: String,  default: '' },
-  branch:         { type: String,  default: '' },
+  repos:         { type: Array,   default: () => [] },
+  loading:       { type: Boolean, default: false },
+  commits:       { type: Array,   default: () => [] },
+  loadingCommits:{ type: Boolean, default: false },
 })
 
 const emit = defineEmits([
-  'pull','push','refresh','initRepo',
-  'update:commitMessage','commit',
-  'stage','unstage','stageAll','unstageAll',
-  'discard','discardAll',
-  'openFile','showDiff',
-  'refreshCommits','loadMoreCommits',
+  'refresh', 'pull', 'push', 'initRepo',
+  'commit', 'stage', 'unstage', 'stageAll', 'unstageAll',
+  'discard', 'discardAll',
+  'openFile', 'showDiff',
+  'update:repoCommitMessage',
+  'generateMessage',
+  'refreshCommits', 'loadMoreCommits',
 ])
 
-const stagedOpen  = ref(true)
-const changesOpen = ref(true)
-const commitsOpen = ref(false)
-const commitsHeight = ref(200)
-const dragging = ref(false)
+// ── Estado local de UI ───────────────────────────────────────
 
-let _startY = 0
-let _startH = 0
+// Quais repos estão abertos (colapsado/expandido)
+const openRepos = ref(new Set())
+// Quais sub-seções estão abertas: 'path:staged' ou 'path:changes'
+const openSections = ref(new Set())
+
+// Inicializa: abre todos os repos por padrão
+function toggleRepo(path) {
+  if (openRepos.value.has(path)) {
+    openRepos.value.delete(path)
+  } else {
+    openRepos.value.add(path)
+  }
+}
+
+function isRepoOpen(path) {
+  // Abre automaticamente na primeira vez
+  if (!openRepos.value.has(path) && props.repos.length > 0) {
+    openRepos.value.add(path)
+  }
+  return openRepos.value.has(path)
+}
+
+function toggleSection(repoPath, section) {
+  const key = `${repoPath}:${section}`
+  if (openSections.value.has(key)) {
+    openSections.value.delete(key)
+  } else {
+    openSections.value.add(key)
+  }
+}
+
+function isSectionOpen(repoPath, section) {
+  const key = `${repoPath}:${section}`
+  return openSections.value.has(key)
+}
+
+// Inicializa seções como abertas quando repos mudam
+watch(() => props.repos, (newRepos) => {
+  if (!newRepos || newRepos.length === 0) return
+  for (const repo of newRepos) {
+    // Abre staged
+    const stagedKey = `${repo.path}:staged`
+    if (!openSections.value.has(stagedKey)) {
+      openSections.value.add(stagedKey)
+    }
+    // Abre changes
+    const changesKey = `${repo.path}:changes`
+    if (!openSections.value.has(changesKey)) {
+      openSections.value.add(changesKey)
+    }
+  }
+}, { immediate: true, deep: true })
+
+// Commits panel
+const commitsOpen   = ref(false)
+const commitsHeight = ref(200)
+const dragging      = ref(false)
+let _startY = 0, _startH = 0
+
+const activeRepoPath = computed(() => props.repos[0]?.path ?? null)
 
 function startResize(e) {
-  // Abre o painel se estiver fechado
   if (!commitsOpen.value) {
     commitsOpen.value = true
-    if (!props.commits.length) emit('refreshCommits')
+    emit('refreshCommits', activeRepoPath.value)
   }
   dragging.value = true
   _startY = e.clientY
   _startH = commitsHeight.value
   window.addEventListener('mousemove', onResize)
-  window.addEventListener('mouseup',  stopResize)
+  window.addEventListener('mouseup', stopResize)
 }
 
 function onResize(e) {
-  // Arrastar para cima (Y menor) → aumenta altura
   const delta = _startY - e.clientY
   commitsHeight.value = Math.max(60, Math.min(700, _startH + delta))
 }
@@ -209,17 +331,33 @@ function onResize(e) {
 function stopResize() {
   dragging.value = false
   window.removeEventListener('mousemove', onResize)
-  window.removeEventListener('mouseup',  stopResize)
+  window.removeEventListener('mouseup', stopResize)
 }
 
 function toggleCommits() {
   commitsOpen.value = !commitsOpen.value
-  if (commitsOpen.value && !props.commits.length) emit('refreshCommits')
+  if (commitsOpen.value && !props.commits.length) {
+    emit('refreshCommits', activeRepoPath.value)
+  }
 }
 
-function tryCommit() {
-  if (!props.stagedFiles.length || !props.commitMessage.trim()) return
-  emit('commit')
+// ── Helpers ──────────────────────────────────────────────────
+
+function stagedOf(repo) {
+  return repo.files?.filter(f => f.staged) ?? []
+}
+
+function unstagedOf(repo) {
+  return repo.files?.filter(f => f.unstaged && !f.staged) ?? []
+}
+
+function totalChanges(repo) {
+  return (repo.files?.length ?? 0)
+}
+
+function tryCommit(repo) {
+  if (!stagedOf(repo).length || !repo.commitMessage?.trim()) return
+  emit('commit', repo.path)
 }
 
 function statusLetter(s) {
@@ -250,29 +388,27 @@ function relDate(d) {
   display: flex;
   flex-direction: column;
   height: 100%;
-  overflow: hidden;       /* CRÍTICO: sem scroll aqui */
+  overflow: hidden;
   font-size: 13px;
   color: var(--text, #ccc);
   background: var(--panel, #1e1e1e);
   user-select: none;
 }
 
-/* Área scrollável do topo — cresce para preencher o espaço entre toolbar e commits */
 .git-body {
   flex: 1;
   overflow-y: auto;
   overflow-x: hidden;
-  min-height: 0;          /* necessário para flex shrink funcionar */
+  min-height: 0;
 }
 
-/* Painel de commits — altura fixa no rodapé */
 .git-commits-panel {
   flex-shrink: 0;
   display: flex;
   flex-direction: column;
   overflow: hidden;
   border-top: 1px solid var(--border, #3c3c3c);
-  transition: height 0s; /* sem transição durante drag */
+  transition: height 0s;
 }
 
 .git-commits-list {
@@ -363,6 +499,63 @@ function relDate(d) {
 .git-tbtn:hover    { background: var(--hover, rgba(255,255,255,.08)); }
 .git-tbtn:disabled { opacity: .35; cursor: default; }
 
+/* ── Repo section ────────────────────────────────────────── */
+.git-repo-section {
+  border-bottom: 1px solid var(--border, rgba(255,255,255,.05));
+}
+
+.git-repo-hd {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  height: 26px;
+  padding: 0 8px 0 4px;
+  cursor: pointer;
+  background: var(--panel-darker, rgba(0,0,0,.2));
+  border-bottom: 1px solid var(--border, #3c3c3c);
+}
+.git-repo-hd:hover { background: var(--list-hover, rgba(255,255,255,.05)); }
+
+.git-repo-name {
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: .06em;
+  color: var(--text, #ccc);
+  flex: 1;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.git-branch-chip {
+  display: flex;
+  align-items: center;
+  font-size: 10px;
+  color: var(--muted, #888);
+  background: var(--badge-bg, rgba(255,255,255,.08));
+  padding: 1px 6px;
+  border-radius: 10px;
+  white-space: nowrap;
+  flex-shrink: 0;
+  max-width: 100px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.git-no-repo-tag {
+  font-size: 10px;
+  color: var(--muted, #666);
+  font-style: italic;
+}
+
+.git-not-repo {
+  padding: 16px;
+  text-align: center;
+  color: var(--muted, #888);
+  font-size: 12px;
+}
+.git-not-repo p { margin: 0 0 10px; }
+
 /* ── Input ───────────────────────────────────────────────── */
 .git-input-row { padding: 8px 8px 4px; }
 .git-msg-input {
@@ -373,16 +566,38 @@ function relDate(d) {
   color: var(--text, #ccc);
   font-size: 13px; font-family: inherit;
   padding: 6px 8px; resize: vertical;
-  min-height: 54px; outline: none; line-height: 1.4;
+  min-height: 48px; outline: none; line-height: 1.4;
 }
 .git-msg-input:focus { border-color: var(--accent, #007acc); }
 
-/* ── Commit split-button ─────────────────────────────────── */
+/* ── Commit row ──────────────────────────────────────────── */
 .git-commit-row {
   display: flex; align-items: stretch;
   margin: 0 8px 8px;
   border-radius: 4px; overflow: hidden;
+  gap: 1px;
 }
+
+/* ✨ Botão IA */
+.git-ai-btn {
+  display: flex; align-items: center; justify-content: center;
+  width: 32px; flex-shrink: 0;
+  background: var(--input-bg, #2d2d2d);
+  border: 1px solid var(--border, #444);
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 14px;
+  transition: background .12s, border-color .12s;
+}
+.git-ai-btn:hover:not(:disabled) {
+  background: rgba(255, 215, 0, .12);
+  border-color: rgba(255, 215, 0, .4);
+}
+.git-ai-btn:disabled { opacity: .35; cursor: default; }
+.git-ai-btn--loading { animation: ai-pulse 1s ease-in-out infinite; }
+@keyframes ai-pulse { 0%,100% { opacity:1; } 50% { opacity:.4; } }
+.git-ai-spin { font-size: 16px; display: inline-block; animation: gi-spin-anim 1s linear infinite; }
+
 .git-commit-main {
   flex: 1; display: flex; align-items: center;
   justify-content: center; gap: 6px;
@@ -434,10 +649,11 @@ function relDate(d) {
   color: var(--badge-fg, #fff); flex-shrink: 0;
 }
 .git-group-actions {
-  display: flex; gap: 1px;
+  display: flex; gap: 1px; align-items: center;
   opacity: 0; transition: opacity .1s; flex-shrink: 0;
 }
-.git-group-hd:hover .git-group-actions { opacity: 1; }
+.git-group-hd:hover .git-group-actions,
+.git-repo-hd:hover .git-group-actions { opacity: 1; }
 
 /* ── Icon buttons ────────────────────────────────────────── */
 .git-icon-btn {

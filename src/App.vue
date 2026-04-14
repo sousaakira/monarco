@@ -126,11 +126,14 @@ const searchInContent = ref(false)
 const searchCaseSensitive = ref(false)
 const searchUseRegex = ref(false)
 
-// Git state
+// Git state — multi-repo
+const gitRepos = ref([])          // [{ path, name, branch, files, isRepo, commitMessage, commits, loadingCommits, loadingAI }]
+
+// Git state — compat com StatusBar (espelha o repo ativo)
 const isGitRepo = ref(false)
 const gitStatus = ref([])
 const gitBranch = ref('')
-const gitCommitMessage = ref('')
+const gitCommitMessage = ref('')  // mantido para comandos da palette
 const isLoadingGit = ref(false)
 const gitBranches = ref([])
 const showBranchDialog = ref(false)
@@ -2804,13 +2807,21 @@ async function openFile(filePath) {
 }
 
 // Abre arquivo Git (caminho relativo ao workspace)
-function openGitFile(relativePath) {
-  if (!workspacePath.value) return
+function openGitFile(relativePath, rootPath) {
+  const base = rootPath || workspacePath.value
+  if (!base || !relativePath) return
   
-  // Constrói o caminho absoluto
-  const separator = workspacePath.value.includes('\\') ? '\\' : '/'
-  const fullPath = workspacePath.value + separator + relativePath
+  // Normalize paths to use forward slashes
+  const normalizedBase = base.replace(/\\/g, '/')
+  const normalizedRelative = relativePath.replace(/\\/g, '/')
   
+  // Remove trailing slash from base if present
+  const cleanBase = normalizedBase.endsWith('/') ? normalizedBase.slice(0, -1) : normalizedBase
+  
+  // Build full path
+  const fullPath = cleanBase + '/' + normalizedRelative
+  
+  console.log('[Git] openGitFile:', { relativePath, rootPath, fullPath })
   openFile(fullPath)
 }
 
@@ -2887,32 +2898,57 @@ function openSearchResult(result) {
   }
 }
 
-// Git functions
+// ── Git — multi-repo ────────────────────────────────────────
+
+// Carrega status de todos os repos do workspace
 async function loadGitStatus() {
-  if (!workspacePath.value) return
-  
+  if (!workspacePath.value && workspaceFolders.value.length === 0) return
   isLoadingGit.value = true
   try {
-    isGitRepo.value = await window.monarco.git.isRepository()
-    
-    if (isGitRepo.value) {
-      const [status, branch] = await Promise.all([
-        window.monarco.git.status(),
-        window.monarco.git.currentBranch()
-      ])
-      gitStatus.value = status
-      gitBranch.value = branch
+    const backendRepos = await window.monarco.git.allRepos()
+    // Merge com estado UI existente (preserva commitMessage, commits, etc.)
+    gitRepos.value = backendRepos.map(br => {
+      const existing = gitRepos.value.find(r => r.path === br.path)
+      return {
+        ...br,
+        commitMessage: existing?.commitMessage ?? '',
+        commits:       existing?.commits       ?? [],
+        loadingCommits:existing?.loadingCommits ?? false,
+        loadingAI:     existing?.loadingAI      ?? false
+      }
+    })
+    // Espelha repo ativo para StatusBar
+    const activeRepo = gitRepos.value.find(r => r.path === workspacePath.value)
+    if (activeRepo) {
+      isGitRepo.value = activeRepo.isRepo
+      gitBranch.value  = activeRepo.branch
+      gitStatus.value  = activeRepo.files
+    } else if (gitRepos.value.length > 0) {
+      isGitRepo.value = gitRepos.value[0].isRepo
+      gitBranch.value  = gitRepos.value[0].branch
+      gitStatus.value  = gitRepos.value[0].files
     }
   } catch (e) {
-    console.error('Failed to load git status', e)
+    console.error('Failed to load git repos', e)
   } finally {
     isLoadingGit.value = false
   }
 }
 
-async function gitStageFile(filePath) {
+// Helpers para obter/setar commitMessage por rootPath
+function getRepoCommitMessage(rootPath) {
+  return gitRepos.value.find(r => r.path === rootPath)?.commitMessage ?? ''
+}
+function setRepoCommitMessage(rootPath, msg) {
+  const repo = gitRepos.value.find(r => r.path === rootPath)
+  if (repo) repo.commitMessage = msg
+}
+
+// ── Operações por repo ───────────────────────────────────────
+
+async function gitStageFile(filePath, rootPath) {
   try {
-    await window.monarco.git.stage(filePath)
+    await window.monarco.git.stage(filePath, rootPath)
     await loadGitStatus()
   } catch (e) {
     console.error('Failed to stage file', e)
@@ -2920,9 +2956,9 @@ async function gitStageFile(filePath) {
   }
 }
 
-async function gitUnstageFile(filePath) {
+async function gitUnstageFile(filePath, rootPath) {
   try {
-    await window.monarco.git.unstage(filePath)
+    await window.monarco.git.unstage(filePath, rootPath)
     await loadGitStatus()
   } catch (e) {
     console.error('Failed to unstage file', e)
@@ -2930,11 +2966,10 @@ async function gitUnstageFile(filePath) {
   }
 }
 
-async function gitDiscardFile(filePath) {
+async function gitDiscardFile(filePath, rootPath) {
   if (!confirm(`Discard changes in ${filePath}?`)) return
-  
   try {
-    await window.monarco.git.discard(filePath)
+    await window.monarco.git.discard(filePath, rootPath)
     await loadGitStatus()
     await refreshTree()
   } catch (e) {
@@ -2943,28 +2978,34 @@ async function gitDiscardFile(filePath) {
   }
 }
 
-async function gitStageAll() {
+async function gitStageAll(rootPath) {
+  const repo = gitRepos.value.find(r => r.path === (rootPath || workspacePath.value))
+  const files = repo ? repo.files.filter(f => f.unstaged) : unstagedFiles.value
   try {
-    for (const f of unstagedFiles.value) await window.monarco.git.stage(f.path)
+    for (const f of files) await window.monarco.git.stage(f.path, rootPath)
     await loadGitStatus()
   } catch (e) {
     window.monarcoToast?.error('Erro ao adicionar tudo ao stage', { description: e.message })
   }
 }
 
-async function gitUnstageAll() {
+async function gitUnstageAll(rootPath) {
+  const repo = gitRepos.value.find(r => r.path === (rootPath || workspacePath.value))
+  const files = repo ? repo.files.filter(f => f.staged) : stagedFiles.value
   try {
-    for (const f of stagedFiles.value) await window.monarco.git.unstage(f.path)
+    for (const f of files) await window.monarco.git.unstage(f.path, rootPath)
     await loadGitStatus()
   } catch (e) {
     window.monarcoToast?.error('Erro ao remover tudo do stage', { description: e.message })
   }
 }
 
-async function gitDiscardAll() {
+async function gitDiscardAll(rootPath) {
   if (!confirm(`Descartar TODAS as alterações não staged? Esta ação não pode ser desfeita.`)) return
+  const repo = gitRepos.value.find(r => r.path === (rootPath || workspacePath.value))
+  const files = repo ? repo.files.filter(f => f.unstaged && !f.staged) : unstagedFiles.value
   try {
-    for (const f of unstagedFiles.value) await window.monarco.git.discard(f.path)
+    for (const f of files) await window.monarco.git.discard(f.path, rootPath)
     await loadGitStatus()
     await refreshTree()
   } catch (e) {
@@ -2972,40 +3013,37 @@ async function gitDiscardAll() {
   }
 }
 
-async function gitCommit() {
-  if (!gitCommitMessage.value.trim()) {
+async function gitCommit(rootPath) {
+  const rp = rootPath || workspacePath.value
+  const repo = gitRepos.value.find(r => r.path === rp)
+  const message = repo ? repo.commitMessage : gitCommitMessage.value
+
+  if (!message?.trim()) {
     window.monarcoToast?.warning('Por favor, insira uma mensagem de commit')
     return
   }
-  
   try {
-    await window.monarco.git.commit(gitCommitMessage.value)
-    gitCommitMessage.value = ''
+    await window.monarco.git.commit(message, rp)
+    if (repo) repo.commitMessage = ''
+    else gitCommitMessage.value = ''
     await loadGitStatus()
     window.monarcoToast?.success('Commit realizado com sucesso!')
   } catch (e) {
     console.error('Failed to commit', e)
-    
-    // Verifica se o erro é de configuração Git
     if (e.message.includes('não está configurado') || e.message.includes('user.name') || e.message.includes('user.email')) {
       const userName = prompt('Configure o Git:\n\nDigite seu nome:')
       if (!userName) return
-      
       const userEmail = prompt('Digite seu email:')
       if (!userEmail) return
-      
       try {
-        await window.monarco.git.config('user.name', userName)
-        await window.monarco.git.config('user.email', userEmail)
-        
-        // Tenta commit novamente
-        await window.monarco.git.commit(gitCommitMessage.value)
-        gitCommitMessage.value = ''
+        await window.monarco.git.config('user.name', userName, rp)
+        await window.monarco.git.config('user.email', userEmail, rp)
+        await window.monarco.git.commit(message, rp)
+        if (repo) repo.commitMessage = ''
+        else gitCommitMessage.value = ''
         await loadGitStatus()
         window.monarcoToast?.success('Git configurado e commit realizado!', { duration: 4000 })
       } catch (configError) {
-        console.error('Failed to configure git', configError)
-        lastError.value = configError.message
         window.monarcoToast?.error('Erro ao configurar Git', { description: configError.message })
       }
     } else {
@@ -3015,9 +3053,9 @@ async function gitCommit() {
   }
 }
 
-async function gitInitRepo() {
+async function gitInitRepo(rootPath) {
   try {
-    await window.monarco.git.init()
+    await window.monarco.git.init(rootPath)
     await loadGitStatus()
   } catch (e) {
     console.error('Failed to init git', e)
@@ -3025,10 +3063,10 @@ async function gitInitRepo() {
   }
 }
 
-async function gitPull() {
+async function gitPull(rootPath) {
   isLoadingGit.value = true
   try {
-    const result = await window.monarco.git.pull()
+    const result = await window.monarco.git.pull(rootPath)
     await loadGitStatus()
     window.monarcoToast?.success('Pull realizado com sucesso!', { description: result.message, duration: 4000 })
   } catch (e) {
@@ -3040,10 +3078,10 @@ async function gitPull() {
   }
 }
 
-async function gitPush() {
+async function gitPush(rootPath) {
   isLoadingGit.value = true
   try {
-    const result = await window.monarco.git.push()
+    const result = await window.monarco.git.push(rootPath)
     await loadGitStatus()
     window.monarcoToast?.success('Push realizado com sucesso!', { description: result.message, duration: 4000 })
   } catch (e) {
@@ -3055,9 +3093,9 @@ async function gitPush() {
   }
 }
 
-async function loadGitBranches() {
+async function loadGitBranches(rootPath) {
   try {
-    const branches = await window.monarco.git.branches()
+    const branches = await window.monarco.git.branches(rootPath)
     gitBranches.value = branches
   } catch (e) {
     console.error('Failed to load branches', e)
@@ -3067,7 +3105,6 @@ async function loadGitBranches() {
 
 async function gitCheckout(branchName) {
   if (!confirm(`Trocar para a branch "${branchName}"?`)) return
-  
   isLoadingGit.value = true
   try {
     await window.monarco.git.checkout(branchName)
@@ -3089,7 +3126,6 @@ async function gitCreateBranch() {
     window.monarcoToast?.warning('Por favor, insira um nome para a branch')
     return
   }
-  
   isLoadingGit.value = true
   try {
     await window.monarco.git.createBranch(name)
@@ -3108,7 +3144,6 @@ async function gitCreateBranch() {
 
 async function gitDeleteBranch(branchName) {
   if (!confirm(`Deletar a branch "${branchName}"?\n\nATENÇÃO: Esta ação não pode ser desfeita!`)) return
-  
   isLoadingGit.value = true
   try {
     await window.monarco.git.deleteBranch(branchName)
@@ -3125,9 +3160,7 @@ async function gitDeleteBranch(branchName) {
 
 function toggleBranchesPanel() {
   showBranchesPanel.value = !showBranchesPanel.value
-  if (showBranchesPanel.value && gitBranches.value.length === 0) {
-    loadGitBranches()
-  }
+  if (showBranchesPanel.value && gitBranches.value.length === 0) loadGitBranches()
 }
 
 function openBranchDialog() {
@@ -3168,21 +3201,16 @@ async function gitCreateBranchFromStatusBar(name) {
   }
 }
 
-async function loadGitCommits(reset = false) {
-  if (reset) {
-    gitCommits.value = []
-  }
-  
+async function loadGitCommits(reset = false, rootPath) {
+  const rp = rootPath || workspacePath.value
+  if (!rp) return
+
+  if (reset) gitCommits.value = []
   isLoadingCommits.value = true
   try {
     const skip = reset ? 0 : gitCommits.value.length
-    const commits = await window.monarco.git.log({ limit: 20, skip })
-    
-    if (reset) {
-      gitCommits.value = commits
-    } else {
-      gitCommits.value = [...gitCommits.value, ...commits]
-    }
+    const commits = await window.monarco.git.log({ limit: 20, skip }, rp)
+    gitCommits.value = reset ? commits : [...gitCommits.value, ...commits]
   } catch (e) {
     console.error('Failed to load commits', e)
     lastError.value = e.message
@@ -3193,8 +3221,23 @@ async function loadGitCommits(reset = false) {
 
 function toggleCommitsPanel() {
   showCommitsPanel.value = !showCommitsPanel.value
-  if (showCommitsPanel.value && gitCommits.value.length === 0) {
-    loadGitCommits(true)
+  if (showCommitsPanel.value && gitCommits.value.length === 0) loadGitCommits(true)
+}
+
+// Gerar mensagem de commit com IA para um repo específico
+async function generateGitCommitMessage(rootPath) {
+  const repo = gitRepos.value.find(r => r.path === rootPath)
+  if (!repo) return
+  repo.loadingAI = true
+  try {
+    const message = await window.monarco.git.generateCommitMessage(rootPath)
+    repo.commitMessage = message
+    window.monarcoToast?.success('Mensagem de commit gerada pela IA ✨')
+  } catch (e) {
+    console.error('Failed to generate commit message', e)
+    window.monarcoToast?.error('Erro ao gerar mensagem', { description: e.message })
+  } finally {
+    repo.loadingAI = false
   }
 }
 
@@ -3214,15 +3257,13 @@ function formatCommitDate(dateStr) {
   return date.toLocaleDateString('pt-BR', { day: '2-digit', month: 'short', year: 'numeric' })
 }
 
-async function showFileDiff(filePath, staged = false) {
+async function showFileDiff(filePath, staged = false, rootPath) {
   try {
-    const diff = await window.monarco.git.diff(filePath, staged)
-    
+    const diff = await window.monarco.git.diff(filePath, staged, rootPath)
     if (!diff) {
       window.monarcoToast?.info('Sem mudanças para exibir')
       return
     }
-    
     diffFilePath.value = filePath
     diffStaged.value = staged
     diffContent.value = diff
@@ -3778,14 +3819,6 @@ onMounted(async () => {
     })
   }
   
-  // Listener para abertura de workspace via CLI (Abrir com...)
-  if (window.monarco?.workspace?.onOpenFromCli) {
-    window.monarco.workspace.onOpenFromCli((path) => {
-      console.log('📂 [App] Recebido comando para abrir workspace via CLI:', path)
-      openWorkspace(path)
-    })
-  }
-
   if (window.monarco?.workspace?.onChanged) {
     window.monarco.workspace.onChanged(async (info) => {
       const nextFolders = Array.isArray(info?.folders) ? info.folders : []
@@ -3799,19 +3832,25 @@ onMounted(async () => {
     })
   }
 
-  // Carrega o último workspace automaticamente
+  // Carrega workspace: prioridade = argv ("Abrir com...") > settings > último workspace
   try {
-    const info = await window.monarco.workspace.getFolders()
-    const folders = Array.isArray(info?.folders) ? info.folders : []
-    const active = info?.activeFolder || folders[0] || null
-    if (folders.length) {
-      workspaceFolders.value = folders
-      workspacePath.value = active
-      await refreshTree()
+    const initialPath = await window.monarco?.workspace?.getInitialPath?.()
+    if (initialPath) {
+      // Aberto via "Abrir com" ou CLI — usa esse caminho diretamente
+      await openWorkspace(initialPath)
     } else {
-      const lastWorkspace = await window.monarco.workspace.getLast()
-      if (lastWorkspace && lastWorkspace.path) {
-        await openWorkspace(lastWorkspace.path)
+      const info = await window.monarco.workspace.getFolders()
+      const folders = Array.isArray(info?.folders) ? info.folders : []
+      const active = info?.activeFolder || folders[0] || null
+      if (folders.length) {
+        workspaceFolders.value = folders
+        workspacePath.value = active
+        await refreshTree()
+      } else {
+        const lastWorkspace = await window.monarco.workspace.getLast()
+        if (lastWorkspace && lastWorkspace.path) {
+          await openWorkspace(lastWorkspace.path)
+        }
       }
     }
   } catch (e) {
@@ -4127,18 +4166,13 @@ onUnmounted(() => {
       <!-- Source Control View -->
       <div v-show="activeView === 'git'" class="sidebar-content" style="padding:0;overflow:hidden">
         <GitPanel
-          :is-git-repo="isGitRepo"
+          :repos="gitRepos"
           :loading="isLoadingGit"
-          :loading-commits="isLoadingCommits"
-          :staged-files="stagedFiles"
-          :unstaged-files="unstagedFiles"
           :commits="gitCommits"
-          :commit-message="gitCommitMessage"
-          :branch="gitBranch"
-          @update:commit-message="gitCommitMessage = $event"
+          :loading-commits="isLoadingCommits"
+          @refresh="loadGitStatus"
           @pull="gitPull"
           @push="gitPush"
-          @refresh="loadGitStatus"
           @init-repo="gitInitRepo"
           @commit="gitCommit"
           @stage="gitStageFile"
@@ -4149,8 +4183,10 @@ onUnmounted(() => {
           @discard-all="gitDiscardAll"
           @open-file="openGitFile"
           @show-diff="showFileDiff"
-          @refresh-commits="loadGitCommits(true)"
-          @load-more-commits="loadGitCommits(false)"
+          @update:repo-commit-message="setRepoCommitMessage"
+          @generate-message="generateGitCommitMessage"
+          @refresh-commits="loadGitCommits(true, $event)"
+          @load-more-commits="loadGitCommits(false, $event)"
         />
       </div>
 

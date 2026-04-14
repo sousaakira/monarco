@@ -25,28 +25,30 @@ contextBridge.exposeInMainWorld('monarco', {
     getPreloadPath: () => ipcRenderer.invoke('webview:getPreloadPath')
   },
   
-  // Git APIs
+  // Git APIs — todos aceitam rootPath opcional para suporte multi-repo
   git: {
-    isRepository: () => ipcRenderer.invoke('git:isRepository'),
-    status: () => ipcRenderer.invoke('git:status'),
-    currentBranch: () => ipcRenderer.invoke('git:currentBranch'),
-    stage: (filePath) => ipcRenderer.invoke('git:stage', filePath),
-    unstage: (filePath) => ipcRenderer.invoke('git:unstage', filePath),
-    discard: (filePath) => ipcRenderer.invoke('git:discard', filePath),
-    commit: (message) => ipcRenderer.invoke('git:commit', message),
-    init: () => ipcRenderer.invoke('git:init'),
-    config: (key, value) => ipcRenderer.invoke('git:config', key, value),
-    getConfig: (key) => ipcRenderer.invoke('git:getConfig', key),
-    // Novos comandos avançados
-    pull: () => ipcRenderer.invoke('git:pull'),
-    push: () => ipcRenderer.invoke('git:push'),
-    fetch: () => ipcRenderer.invoke('git:fetch'),
-    branches: () => ipcRenderer.invoke('git:branches'),
-    createBranch: (name) => ipcRenderer.invoke('git:createBranch', name),
-    checkout: (name) => ipcRenderer.invoke('git:checkout', name),
-    deleteBranch: (name) => ipcRenderer.invoke('git:deleteBranch', name),
-    log: (options) => ipcRenderer.invoke('git:log', options),
-    diff: (filePath, staged) => ipcRenderer.invoke('git:diff', filePath, staged)
+    isRepository:  (rootPath)              => ipcRenderer.invoke('git:isRepository', rootPath),
+    status:        (rootPath)              => ipcRenderer.invoke('git:status', rootPath),
+    currentBranch: (rootPath)              => ipcRenderer.invoke('git:currentBranch', rootPath),
+    stage:         (filePath, rootPath)    => ipcRenderer.invoke('git:stage', filePath, rootPath),
+    unstage:       (filePath, rootPath)    => ipcRenderer.invoke('git:unstage', filePath, rootPath),
+    discard:       (filePath, rootPath)    => ipcRenderer.invoke('git:discard', filePath, rootPath),
+    commit:        (message, rootPath)     => ipcRenderer.invoke('git:commit', message, rootPath),
+    init:          (rootPath)              => ipcRenderer.invoke('git:init', rootPath),
+    config:        (key, value, rootPath)  => ipcRenderer.invoke('git:config', key, value, rootPath),
+    getConfig:     (key, rootPath)         => ipcRenderer.invoke('git:getConfig', key, rootPath),
+    pull:          (rootPath)              => ipcRenderer.invoke('git:pull', rootPath),
+    push:          (rootPath)              => ipcRenderer.invoke('git:push', rootPath),
+    fetch:         (rootPath)              => ipcRenderer.invoke('git:fetch', rootPath),
+    branches:      (rootPath)              => ipcRenderer.invoke('git:branches', rootPath),
+    createBranch:  (name, rootPath)        => ipcRenderer.invoke('git:createBranch', name, rootPath),
+    checkout:      (name, rootPath)        => ipcRenderer.invoke('git:checkout', name, rootPath),
+    deleteBranch:  (name, rootPath)        => ipcRenderer.invoke('git:deleteBranch', name, rootPath),
+    log:           (options, rootPath)     => ipcRenderer.invoke('git:log', options, rootPath),
+    diff:          (filePath, staged, rootPath) => ipcRenderer.invoke('git:diff', filePath, staged, rootPath),
+    // Multi-repo
+    allRepos:               ()         => ipcRenderer.invoke('git:allRepos'),
+    generateCommitMessage:  (rootPath) => ipcRenderer.invoke('git:generateCommitMessage', rootPath)
   },
   
   // Workspace Recent APIs
@@ -55,6 +57,7 @@ contextBridge.exposeInMainWorld('monarco', {
     getRecent: () => ipcRenderer.invoke('workspace:getRecent'),
     openRecent: (path) => ipcRenderer.invoke('workspace:openRecent', path),
     getLast: () => ipcRenderer.invoke('workspace:getLast'),
+    getInitialPath: () => ipcRenderer.invoke('workspace:getInitialPath'),
     removeRecent: (path) => ipcRenderer.invoke('workspace:removeRecent', path),
     getFolders: () => ipcRenderer.invoke('workspace:getFolders'),
     addFolder: () => ipcRenderer.invoke('workspace:addFolder'),
