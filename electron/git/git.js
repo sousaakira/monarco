@@ -129,7 +129,16 @@ export class Git {
    * Execute a git command.
    */
   async exec(cwd, args, options = {}) {
-    const cmd = `git ${args.join(' ')}`
+    // Properly quote arguments for shell execution
+    const quotedArgs = args.map((arg) => {
+      // Quote arguments that contain spaces
+      if (arg.includes(' ') || arg.includes('"') || arg.includes("'")) {
+        // Escape internal quotes and wrap in quotes
+        return `"${arg.replace(/"/g, '\\"')}"`
+      }
+      return arg
+    })
+    const cmd = `git ${quotedArgs.join(' ')}`
     try {
       const result = await execAsync(cmd, {
         cwd,
